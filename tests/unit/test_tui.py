@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from mcpaegis.core.session import LLMConfig
 from mcpaegis.llm.client import DEFAULT_MODEL, _delta_from_sse_line
 from mcpaegis.lima.orchestrate import RunResult
 from mcpaegis.tui.app import (
+    WELCOME_TEXT,
+    ModeScreen,
+    ModelScreen,
+    WizardApp,
     bullet,
     default_llm_on,
     env_model_id,
@@ -98,3 +103,60 @@ def test_polish_report_uses_llm(monkeypatch):
     out = polish_report("raw findings", cfg)
     assert "W5 (Command / SQL Injection)" in out
     assert "—" not in out
+
+
+def test_welcome_text_content():
+    assert "Welcome to MCPAegis" in WELCOME_TEXT
+    assert "security analysis" in WELCOME_TEXT
+    assert "Enter to continue" in WELCOME_TEXT
+
+
+def test_tui_opening_screen_welcome_and_top_alignment():
+    async def _run():
+        app = WizardApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            assert isinstance(app.screen, ModeScreen)
+            welcome = app.screen.query_one("#welcome")
+            assert str(welcome.render()) == WELCOME_TEXT
+            assert "Welcome to MCPAegis" in str(welcome.render())
+
+            list_node = app.screen.query_one("#list")
+            initial_y = list_node.region.y
+            # Bullet list should stick close to the top
+            assert initial_y <= 12
+
+            # Expanding terminal height should keep the bullet list aligned to the top
+            await pilot.resize_terminal(80, 60)
+            await pilot.pause()
+            assert list_node.region.y == initial_y
+
+            await pilot.resize_terminal(120, 100)
+            await pilot.pause()
+            assert list_node.region.y == initial_y
+
+    asyncio.run(_run())
+
+
+def test_tui_model_screen_top_alignment_on_expand():
+    async def _run():
+        app = WizardApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            # Advance to ModelScreen
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ModelScreen)
+
+            list_node = app.screen.query_one("#list")
+            initial_y = list_node.region.y
+            assert initial_y <= 10
+
+            # Expanding terminal should keep model bullet choices at the top
+            await pilot.resize_terminal(80, 60)
+            await pilot.pause()
+            assert list_node.region.y == initial_y
+
+            await pilot.resize_terminal(120, 100)
+            await pilot.pause()
+            assert list_node.region.y == initial_y
+
+    asyncio.run(_run())
