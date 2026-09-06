@@ -1,4 +1,4 @@
-"""Fixture MCP server: hardcoded secrets in source (W14).
+"""Fixture MCP server: hardcoded secrets in source (W10).
 
 Lab analogue: Appsecco secrets-pii (utilities + embedded contact / keys).
 Values are **fake** and chosen to match ``credential_scanner`` regexes.

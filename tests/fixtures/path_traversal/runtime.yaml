@@ -1,0 +1,4 @@
+# Dummy path — never the planted canary file.
+- tool_name: read_file
+  arguments:
+    path: /tmp/mcpaegis-placeholder-path

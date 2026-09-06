@@ -1,0 +1,5 @@
+- tool_name: get_status
+  arguments: {}
+- tool_name: search
+  arguments:
+    query: hello

@@ -2,7 +2,7 @@
 
 Paired with ``other.py``, which defines a *different* ``search`` that shells
 out. Generated taint sources must be **file-scoped** to this handler so the
-helper in ``other.py`` cannot produce a false ``direct`` W6.
+helper in ``other.py`` cannot produce a false ``direct`` W5.
 """
 
 from __future__ import annotations

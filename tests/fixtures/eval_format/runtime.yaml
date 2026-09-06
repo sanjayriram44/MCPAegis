@@ -1,0 +1,4 @@
+# In-process eval only; no execve expected.
+- tool_name: get_qotd
+  arguments:
+    fmt: quote

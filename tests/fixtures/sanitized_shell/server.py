@@ -1,7 +1,7 @@
-"""Counter-example: tool parameter is ``shlex.quote``'d before exec (no direct W6).
+"""Counter-example: tool parameter is ``shlex.quote``'d before exec (no direct W5).
 
 Taint rules list ``shlex.quote`` as a sanitizer. Pattern mode may still
-see a ``subprocess.run`` sink (proximate). Stage 3.5 W6 requires ``direct``.
+see a ``subprocess.run`` sink (proximate). Named W5 requires ``direct``.
 """
 
 from __future__ import annotations

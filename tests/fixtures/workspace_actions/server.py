@@ -1,4 +1,4 @@
-"""Fixture MCP server: naive path join + unsandboxed code exec (W7 + W6).
+"""Fixture MCP server: naive path join + unsandboxed code exec (W6 + W5).
 
 Lab analogue: Appsecco ``vulnerable-mcp-server-filesystem-workspace-actions``.
 That server required a workspace argv and would refuse to start without it.

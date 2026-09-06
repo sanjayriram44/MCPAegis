@@ -1,9 +1,9 @@
-"""Counter-example: reachable shell sink, but the command is hardcoded (no W6).
+"""Counter-example: reachable shell sink, but the command is hardcoded (no W5).
 
 ``search_docs`` calls ``_internal_cleanup()``, which runs a constant
 ``CLEANUP_CMD``. Pattern-mode Semgrep still records a **proximate**
 ``shell_exec`` sink (call-graph reachability). Taint mode must **not**
-promote it to ``direct``, so Stage 3.5 must not emit W6.
+promote it to ``direct``, so Lane B must not emit W5.
 
 Handshake-safe: cleanup only runs if the tool is called.
 """

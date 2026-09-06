@@ -1,0 +1,6 @@
+- tool_name: summarize
+  arguments:
+    text: hello
+- tool_name: search
+  arguments:
+    query: hello

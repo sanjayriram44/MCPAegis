@@ -1,0 +1,4 @@
+# Only tools this server lists. Safe payload: echo, not rm.
+- tool_name: run_cmd
+  arguments:
+    command: echo hello

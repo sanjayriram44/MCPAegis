@@ -1,4 +1,4 @@
-"""Fixture MCP server: unsanitized filesystem read (W7).
+"""Fixture MCP server: unsanitized filesystem read (W6).
 
 Lab analogue: Appsecco filesystem workspace ``read_file`` without a
 ``realpath`` / prefix check. Path is opened as given.

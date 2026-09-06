@@ -1,0 +1,10 @@
+- tool_name: read_file
+  arguments:
+    path: /tmp/mcpaegis-placeholder-path
+- tool_name: write_file
+  arguments:
+    path: /tmp/mcpaegis-placeholder-path
+    content: x
+- tool_name: execute_code
+  arguments:
+    code: "1 + 1"

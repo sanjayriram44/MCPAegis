@@ -1,0 +1,6 @@
+- tool_name: search_docs
+  arguments:
+    query: hello
+- tool_name: get_document
+  arguments:
+    title: hello

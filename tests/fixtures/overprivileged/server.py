@@ -1,4 +1,4 @@
-"""Fixture MCP server: description never declares shell; code execs (W4).
+"""Fixture MCP server: description never declares shell; code execs (W3).
 
 The advertised capability is documentation search. The implementation
 passes ``query`` to ``subprocess.run(..., shell=True)``.

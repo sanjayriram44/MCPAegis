@@ -1,4 +1,4 @@
-"""Fixture MCP server: attacker-controlled ``eval`` (W6, dynamic_code_load).
+"""Fixture MCP server: attacker-controlled ``eval`` (W5, dynamic_code_load).
 
 Lab analogue: Appsecco ``vulnerable-mcp-server-malicious-code-exec``
 (quote-of-the-day with an unsafe format string). The original server

@@ -1,0 +1,3 @@
+- tool_name: run_quoted
+  arguments:
+    command: echo hello

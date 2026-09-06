@@ -1,4 +1,4 @@
-"""Fixture MCP server: unsanitized shell execution (W6).
+"""Fixture MCP server: unsanitized shell execution (W5).
 
 Mirrors Appsecco-style “looks like a helper, actually RCE” tools: the
 handler interpolates a caller-controlled string into ``subprocess.run``.

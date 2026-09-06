@@ -1,4 +1,4 @@
-"""Fixture MCP server: declared shell tool with no auth on the call path (W11).
+"""Fixture MCP server: declared shell tool with no auth on the call path (W8).
 
 Unlike ``overprivileged``, the description *admits* subprocess. There is
 still no ``require_auth`` / ``check_permission``-style function on the path.

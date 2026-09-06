@@ -1,13 +1,13 @@
-"""Fixture MCP server: untrusted document body (W13-class, static miss).
+"""Fixture MCP server: untrusted document body (no named weakness).
 
 Lab analogue: Appsecco ``vulnerable-mcp-server-indirect-prompt-injection``.
 Search/retrieve returns corpus text **verbatim**, including a hidden
 ``[SYSTEM INSTRUCTION]`` block. That is not tool-metadata poisoning (W1)
-and not a Semgrep sink (W6/W7/W9).
+and not a Semgrep sink (W5/W6/W7).
 
-Static v1 should **not** emit a named weakness for ``search_docs`` /
-``get_document``. W13 (corpus / argument-echo IPI) is deferred; runtime
-canaries are env/file only and will not catch this wiki-body shape.
+Static should **not** emit a named weakness for ``search_docs`` /
+``get_document``. Corpus / argument-echo prompt injection is out of scope;
+runtime canaries are env/file only and will not catch this wiki-body shape.
 
 Handshake-safe: documents are in-memory string constants. No HTTP, no disk.
 """

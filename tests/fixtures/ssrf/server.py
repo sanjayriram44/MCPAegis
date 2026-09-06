@@ -1,4 +1,4 @@
-"""Fixture MCP server: unsanitized URL fetch (W9).
+"""Fixture MCP server: unsanitized URL fetch (W7).
 
 Lab analogue: Appsecco Wikipedia / utilities servers that take a URL or
 title and issue an outbound HTTP request with no allowlist.

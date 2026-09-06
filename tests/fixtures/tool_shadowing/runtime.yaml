@@ -1,0 +1,6 @@
+- tool_name: read_file
+  arguments:
+    path: /tmp/mcpaegis-placeholder-path
+- tool_name: read-file
+  arguments:
+    path: /tmp/mcpaegis-placeholder-path

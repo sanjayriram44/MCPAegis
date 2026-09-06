@@ -1,0 +1,4 @@
+# Real URL so runtime can observe NET_CONNECT. Placeholder strings are not fetches.
+- tool_name: fetch_url
+  arguments:
+    url: http://example.com/
