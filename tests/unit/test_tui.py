@@ -9,6 +9,7 @@ from mcpaegis.core.session import LLMConfig
 from mcpaegis.llm.client import DEFAULT_MODEL, _delta_from_sse_line
 from mcpaegis.lima.orchestrate import RunResult
 from mcpaegis.tui.app import (
+    SHIELD_LOGO,
     WELCOME_TEXT,
     ModeScreen,
     ModelScreen,
@@ -111,11 +112,21 @@ def test_welcome_text_content():
     assert "Enter to continue" in WELCOME_TEXT
 
 
+def test_shield_logo_content():
+    assert "MCP" in SHIELD_LOGO
+    assert "AEGIS" in SHIELD_LOGO
+    assert "\\" in SHIELD_LOGO
+    assert "/" in SHIELD_LOGO
+
+
 def test_tui_opening_screen_welcome_and_top_alignment():
     async def _run():
         app = WizardApp()
         async with app.run_test(size=(80, 24)) as pilot:
             assert isinstance(app.screen, ModeScreen)
+            logo = app.screen.query_one("#logo")
+            assert str(logo.render()) == SHIELD_LOGO
+
             welcome = app.screen.query_one("#welcome")
             assert str(welcome.render()) == WELCOME_TEXT
             assert "Welcome to MCPAegis" in str(welcome.render())
@@ -123,7 +134,7 @@ def test_tui_opening_screen_welcome_and_top_alignment():
             list_node = app.screen.query_one("#list")
             initial_y = list_node.region.y
             # Bullet list should stick close to the top
-            assert initial_y <= 12
+            assert initial_y <= 18
 
             # Expanding terminal height should keep the bullet list aligned to the top
             await pilot.resize_terminal(80, 60)
