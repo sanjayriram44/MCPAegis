@@ -21,7 +21,7 @@ def _poisoning() -> PoisoningFlag:
 def _w4() -> CrossCheckFinding:
     return CrossCheckFinding(
         tool_name="echo",
-        weakness_id="W4",
+        weakness_id="W3",
         direction="under_declared",
         declared_capabilities=[],
         code_capabilities=[Capability.SHELL_EXEC],
@@ -48,7 +48,7 @@ def test_static_only_when_no_runtime(tmp_path):
     combined = merge(static, None, write_output=False, server_path=tmp_path)
     tiers = _findings_by_tier(combined)
     assert set(tiers) == {"static_only"}
-    assert {f.weakness_id for f in tiers["static_only"]} == {"W1", "W4"}
+    assert {f.weakness_id for f in tiers["static_only"]} == {"W1", "W3"}
     assert combined.dynamic_report_ref is None
 
 
@@ -82,7 +82,7 @@ def test_runtime_only_finding():
         findings=[
             runtime_finding(
                 tool_name="echo",
-                weakness_id="W15",
+                weakness_id="W10",
                 status="runtime_only",
                 severity="CRITICAL",
                 description="canary leaked",
@@ -93,7 +93,7 @@ def test_runtime_only_finding():
     tiers = _findings_by_tier(combined)
     assert "runtime_only" in tiers
     only = tiers["runtime_only"][0]
-    assert only.weakness_id == "W15"
+    assert only.weakness_id == "W10"
     assert only.severity == "CRITICAL"
     assert only.confidence_tier == "runtime_only"
 
@@ -123,7 +123,7 @@ def test_static_w6_upgraded_when_runtime_confirms():
         injection_findings=[
             InjectionFinding(
                 tool_name="run_cmd",
-                weakness_id="W6",
+                weakness_id="W5",
                 sink_ref="sink_1",
                 sink_type=SinkType.SHELL_EXEC,
                 file="server.py",
@@ -136,7 +136,7 @@ def test_static_w6_upgraded_when_runtime_confirms():
         findings=[
             runtime_finding(
                 tool_name="run_cmd",
-                weakness_id="W6",
+                weakness_id="W5",
                 status="confirmed",
                 description="command injection confirmed at runtime",
                 evidence_refs={"sink_ref": "sink_1"},
@@ -145,7 +145,7 @@ def test_static_w6_upgraded_when_runtime_confirms():
     )
     combined = merge(static, dynamic, write_output=False)
     tiers = _findings_by_tier(combined)
-    assert any(f.weakness_id == "W6" and f.confidence_tier == "runtime_confirmed" for f in tiers["runtime_confirmed"])
+    assert any(f.weakness_id == "W5" and f.confidence_tier == "runtime_confirmed" for f in tiers["runtime_confirmed"])
 
 
 def test_runtime_confirms_only_matching_sink_ref():
@@ -154,7 +154,7 @@ def test_runtime_confirms_only_matching_sink_ref():
         injection_findings=[
             InjectionFinding(
                 tool_name="run_cmd",
-                weakness_id="W6",
+                weakness_id="W5",
                 sink_ref="sink_search",
                 sink_type=SinkType.SHELL_EXEC,
                 file="server.py",
@@ -163,7 +163,7 @@ def test_runtime_confirms_only_matching_sink_ref():
             ),
             InjectionFinding(
                 tool_name="run_cmd",
-                weakness_id="W6",
+                weakness_id="W5",
                 sink_ref="sink_export",
                 sink_type=SinkType.SHELL_EXEC,
                 file="server.py",
@@ -176,7 +176,7 @@ def test_runtime_confirms_only_matching_sink_ref():
         findings=[
             runtime_finding(
                 tool_name="run_cmd",
-                weakness_id="W6",
+                weakness_id="W5",
                 status="confirmed",
                 description="search path exercised",
                 evidence_refs={"sink_ref": "sink_search"},
@@ -184,7 +184,7 @@ def test_runtime_confirms_only_matching_sink_ref():
         ]
     )
     combined = merge(static, dynamic, write_output=False)
-    w6 = [f for t in combined.tools for f in t.findings if f.weakness_id == "W6"]
+    w6 = [f for t in combined.tools for f in t.findings if f.weakness_id == "W5"]
     tiers = {f.confidence_tier for f in w6}
     assert tiers == {"runtime_confirmed", "static_only"}
     confirmed = next(f for f in w6 if f.confidence_tier == "runtime_confirmed")

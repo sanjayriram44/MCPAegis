@@ -106,7 +106,7 @@ def static_report(**overrides: Any) -> StaticReport:
 def runtime_finding(
     *,
     tool_name: str = "echo",
-    weakness_id: str = "W6",
+    weakness_id: str = "W5",
     status: str = "confirmed",
     severity: str = "HIGH",
     call_id: str = "call-1",

@@ -54,7 +54,7 @@ def test_assemble_then_merge_static_only(tmp_path: Path):
         cross_check_findings=[
             CrossCheckFinding(
                 tool_name="run",
-                weakness_id="W4",
+                weakness_id="W3",
                 direction="under_declared",
                 declared_capabilities=[Capability.FS_READ],
                 code_capabilities=[Capability.SHELL_EXEC],
@@ -66,7 +66,7 @@ def test_assemble_then_merge_static_only(tmp_path: Path):
         access_control_findings=[
             AccessControlFinding(
                 tool_name="run",
-                weakness_id="W11",
+                weakness_id="W8",
                 sink_ref="sink_1",
                 reason="no auth",
             )
@@ -74,7 +74,7 @@ def test_assemble_then_merge_static_only(tmp_path: Path):
         dependency_findings=[],
         static_credential_findings=[
             StaticCredentialFinding(
-                weakness_id="W14",
+                weakness_id="W10",
                 file="server.py",
                 line=3,
                 pattern="aws_access_key_id",
@@ -84,11 +84,11 @@ def test_assemble_then_merge_static_only(tmp_path: Path):
         scanned_at=datetime.now(timezone.utc),
     )
     assert static.expected_behavior_profiles
-    assert "W4" in static.expected_behavior_profiles[0].known_flags
+    assert "W3" in static.expected_behavior_profiles[0].known_flags
 
     combined = merge(static, None, write_output=False, server_path=tmp_path)
     ids = {f.weakness_id for t in combined.tools for f in t.findings}
-    assert {"W1", "W4", "W11", "W14"} <= ids
+    assert {"W1", "W3", "W8", "W10"} <= ids
     assert all(f.confidence_tier == "static_only" for t in combined.tools for f in t.findings)
 
 

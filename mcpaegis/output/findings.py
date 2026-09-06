@@ -43,20 +43,14 @@ Severity = Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
 WEAKNESS_TITLES: dict[str, str] = {
     Weakness.W1_TOOL_POISONING.value: "Tool Poisoning",
     Weakness.W2_TOOL_SHADOWING.value: "Tool Shadowing",
-    Weakness.W3_RUG_PULL.value: "Rug Pull",
-    Weakness.W4_OVERPRIVILEGED.value: "Over-privileged / Capability Mismatch",
-    Weakness.W5_SUPPLY_CHAIN.value: "Supply Chain Vulnerability",
-    Weakness.W6_COMMAND_INJECTION.value: "Command / SQL Injection",
-    Weakness.W7_PATH_TRAVERSAL.value: "Path Traversal",
-    Weakness.W9_SSRF.value: "Server-Side Request Forgery",
-    Weakness.W10_SCHEMA_BYPASS.value: "Schema Bypass",
-    Weakness.W11_ACCESS_CONTROL.value: "Missing Access Control",
-    Weakness.W12_TOOL_EXEC_HIJACK.value: "Tool Execution Hijack",
-    Weakness.W13_INDIRECT_PROMPT_INJECTION.value: "Indirect Prompt Injection",
-    Weakness.W14_STATIC_CRED_EXPOSURE.value: "Static Credential Exposure",
-    Weakness.W15_RUNTIME_CRED_LEAKAGE.value: "Runtime Credential Leakage",
-    Weakness.W16_CONTEXT_OVERSHARING.value: "Context Oversharing",
-    Weakness.W17_HOST_SIDE_ATTACKS.value: "Host-Side Attacks",
+    Weakness.W3_OVERPRIVILEGED.value: "Over-privileged / Capability Mismatch",
+    Weakness.W4_SUPPLY_CHAIN.value: "Supply Chain Vulnerability",
+    Weakness.W5_COMMAND_INJECTION.value: "Command / SQL Injection",
+    Weakness.W6_PATH_TRAVERSAL.value: "Path Traversal",
+    Weakness.W7_SSRF.value: "Server-Side Request Forgery",
+    Weakness.W8_ACCESS_CONTROL.value: "Missing Access Control",
+    Weakness.W9_TOOL_EXEC_HIJACK.value: "Tool Execution Hijack",
+    Weakness.W10_CREDENTIAL_EXPOSURE.value: "Credential Exposure",
 }
 
 SEVERITY_RANK: dict[str, int] = {
@@ -69,16 +63,14 @@ SEVERITY_RANK: dict[str, int] = {
 _DEFAULT_SEVERITY: dict[str, Severity] = {
     "W1": "HIGH",
     "W2": "MEDIUM",
-    "W4": "MEDIUM",
+    "W3": "MEDIUM",
+    "W4": "HIGH",
     "W5": "HIGH",
     "W6": "HIGH",
     "W7": "HIGH",
+    "W8": "MEDIUM",
     "W9": "HIGH",
-    "W11": "MEDIUM",
-    "W12": "HIGH",
-    "W13": "HIGH",
-    "W14": "HIGH",
-    "W15": "CRITICAL",
+    "W10": "HIGH",
 }
 
 

@@ -165,6 +165,20 @@ def render_markdown(
         for record in records:
             parts.extend(_finding_lines(record))
         parts.append("")
+    if isinstance(source, DynamicReport) and source.post_execution_verifications:
+        parts.append("## Judge classifications")
+        parts.append("")
+        for ver in source.post_execution_verifications:
+            parts.append(f"### `{ver.tool_name}` (`{ver.call_id}`)")
+            parts.append("")
+            if not ver.judge_classifications:
+                parts.append("- _No LLM classifications._")
+                parts.append("")
+                continue
+            for item in ver.judge_classifications:
+                why = item.reason or "(no reason)"
+                parts.append(f"- `{item.weakness_id}` **{item.verdict}**: {why}")
+            parts.append("")
     return "\n".join(parts).rstrip() + "\n"
 
 

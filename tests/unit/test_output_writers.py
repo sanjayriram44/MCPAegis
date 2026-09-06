@@ -66,7 +66,7 @@ def test_sarif_combined_report(tmp_path: Path):
                 observed_capabilities=[],
                 findings=[
                     CombinedFinding(
-                        weakness_id="W4",
+                        weakness_id="W3",
                         severity="HIGH",
                         confidence_tier="static_only",
                         description="under declared",
@@ -81,4 +81,4 @@ def test_sarif_combined_report(tmp_path: Path):
     sarif_writer.write(combined, path)
     data = json_writer.load_json(path)
     assert data["runs"][0]["properties"]["kind"] == "combined"
-    assert data["runs"][0]["results"][0]["ruleId"] == "W4"
+    assert data["runs"][0]["results"][0]["ruleId"] == "W3"
