@@ -3,11 +3,7 @@
 # Stock Ubuntu kernel (BTF + BCC). The MCP server runs as a local process
 # in a nested cgroup — no Docker.
 #
-#   brew install lima
-#   limactl start --name=mcpaegis lima.yaml
-#   limactl shell mcpaegis
-#
-# Prefer: `mcpaegis` TUI (Apple Silicon) which starts this instance.
+# Bundled copy; keep in sync with the repo-root lima.yaml.
 # Full runbook: docs/lima-runtime.md
 
 vmType: vz
