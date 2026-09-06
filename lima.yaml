@@ -1,0 +1,55 @@
+# MCPAegis runtime guest: Ubuntu 24.04 ARM64 on Apple Virtualization.framework.
+#
+# Stock Ubuntu kernel (BTF + BCC). The MCP server runs as a local process
+# in a nested cgroup — no Docker.
+#
+#   brew install lima
+#   limactl start --name=mcpaegis lima.yaml
+#   limactl shell mcpaegis
+#
+# Full runbook: docs/lima-runtime.md
+
+vmType: vz
+arch: aarch64
+
+cpus: 4
+memory: "8GiB"
+disk: "40GiB"
+
+# virtiofs (vz). Same host paths in the guest, so the Mac checkout is
+# /Users/<you>/Documents/MCPAegis (writable).
+mounts:
+  - location: "~"
+    writable: true
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: aarch64
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y --no-install-recommends \
+        ca-certificates \
+        python3-pip \
+        python3-venv \
+        python3-bpfcc \
+        bpfcc-tools \
+        "linux-headers-$(uname -r)"
+      # BCC needs bpf() from a non-root user (Ubuntu defaults this to 2 / 1).
+      sysctl -w kernel.unprivileged_bpf_disabled=0 || true
+      printf 'kernel.unprivileged_bpf_disabled=0\n' > /etc/sysctl.d/99-mcpaegis-bpf.conf
+      printf '* soft memlock unlimited\n* hard memlock unlimited\n' > /etc/security/limits.d/99-mcpaegis-memlock.conf
+
+probes:
+  - mode: readiness
+    description: Stock kernel BTF
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      uname -r
+      test -e /sys/kernel/btf/vmlinux
