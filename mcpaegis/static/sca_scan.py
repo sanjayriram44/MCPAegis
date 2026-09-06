@@ -1,4 +1,4 @@
-"""Stage 6b: wrap pip-audit / npm audit / osv-scanner / cargo-audit (W5)."""
+"""Lane C: wrap pip-audit / npm audit / osv-scanner / cargo-audit (W4)."""
 
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ def _pip_audit(root: Path) -> list[DependencyFinding]:
         for vuln in vulns:
             findings.append(
                 DependencyFinding(
-                    weakness_id="W5",
+                    weakness_id="W4",
                     package_name=name,
                     installed_version=version,
                     vulnerable_range=_join_ranges(vuln.get("fix_versions") or vuln.get("vulnerable_range")),
@@ -112,7 +112,7 @@ def _npm_audit(root: Path) -> list[DependencyFinding]:
                             break
             findings.append(
                 DependencyFinding(
-                    weakness_id="W5",
+                    weakness_id="W4",
                     package_name=str(name),
                     installed_version=str(meta.get("range") or meta.get("installed") or ""),
                     vulnerable_range=str(meta.get("range") or "") or None,
@@ -128,7 +128,7 @@ def _npm_audit(root: Path) -> list[DependencyFinding]:
                 continue
             findings.append(
                 DependencyFinding(
-                    weakness_id="W5",
+                    weakness_id="W4",
                     package_name=str(adv.get("module_name") or ""),
                     installed_version=str(adv.get("findings", [{}])[0].get("version") if adv.get("findings") else ""),
                     vulnerable_range=str(adv.get("vulnerable_versions") or "") or None,
@@ -153,7 +153,7 @@ def _osv_scanner(root: Path) -> list[DependencyFinding]:
             for vuln in pkg.get("vulnerabilities") or []:
                 findings.append(
                     DependencyFinding(
-                        weakness_id="W5",
+                        weakness_id="W4",
                         package_name=name,
                         installed_version=version,
                         vulnerable_range=_osv_range(vuln),
@@ -184,7 +184,7 @@ def _cargo_audit(root: Path) -> list[DependencyFinding]:
         package = vuln.get("package") or {}
         findings.append(
             DependencyFinding(
-                weakness_id="W5",
+                weakness_id="W4",
                 package_name=str(package.get("name") or advisory.get("package") or ""),
                 installed_version=str(package.get("version") or ""),
                 vulnerable_range=str((advisory.get("affected_functions") or "") or "") or None,
@@ -212,7 +212,7 @@ def _npm_install_scripts(root: Path) -> list[DependencyFinding]:
             pkg = str(data.get("name") or package_json.parent.name)
             findings.append(
                 DependencyFinding(
-                    weakness_id="W5",
+                    weakness_id="W4",
                     package_name=f"{pkg} ({hook})",
                     installed_version=str(data.get("version") or ""),
                     vulnerable_range=None,

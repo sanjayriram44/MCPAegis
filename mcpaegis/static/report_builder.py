@@ -1,4 +1,4 @@
-"""Stage 7: assemble StaticReport, ExpectedBehaviorProfile, and write outputs."""
+"""Wave 3: assemble StaticReport, ExpectedBehaviorProfile, and write outputs."""
 
 from __future__ import annotations
 
@@ -99,9 +99,9 @@ def collect_known_flags(
     for item in injections or []:
         add(item.tool_name, item.weakness_id)
     if credentials:
-        add("*", Weakness.W14_STATIC_CRED_EXPOSURE.value)
+        add("*", Weakness.W10_STATIC_CRED_EXPOSURE.value)
     if dependencies:
-        add("*", Weakness.W5_SUPPLY_CHAIN.value)
+        add("*", Weakness.W4_SUPPLY_CHAIN.value)
     return flags
 
 
@@ -130,7 +130,7 @@ def assemble(
         dependencies=dependency_findings,
         injections=injection_findings,
     )
-    # Server-wide flags (W5/W14) attach to every tool profile as known context.
+    # Server-wide flags (W4/W10) attach to every tool profile as known context.
     global_flags = known.pop("*", [])
     for name in tool_names:
         for flag in global_flags:

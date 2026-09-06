@@ -1,4 +1,4 @@
-"""Stage 2: keyword multi-label classifier for declared capabilities.
+"""Keyword multi-label classifier for declared capabilities (Lane A fallback).
 
 Declared capabilities are what the tool *advertises* to a client: the MCP
 tool name and its input-schema argument names (plus per-argument titles /
@@ -61,8 +61,13 @@ KEYWORD_RULES: list[TokenSpec] = [
 def classify(tools: Iterable[ToolMetadata]) -> list[DeclaredCapability]:
     results: list[DeclaredCapability] = []
     for tool in tools:
-        results.extend(_classify_tool(tool))
+        results.extend(classify_tool(tool))
     return results
+
+
+def classify_tool(tool: ToolMetadata) -> list[DeclaredCapability]:
+    """Public per-tool keyword fallback used when the advertisement LLM fails."""
+    return _classify_tool(tool)
 
 
 def _classify_tool(tool: ToolMetadata) -> list[DeclaredCapability]:

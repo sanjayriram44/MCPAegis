@@ -75,10 +75,10 @@ class SinkFact(BaseModel):
 
 
 class InjectionFinding(BaseModel):
-    """Dataflow-confirmed W6/W7/W9 from Stage 3.5 (taint-mode Semgrep)."""
+    """Dataflow-confirmed W5/W6/W7 from Lane B (taint-mode Semgrep)."""
 
     tool_name: str
-    weakness_id: Literal["W6", "W7", "W9"]
+    weakness_id: Literal["W5", "W6", "W7"]
     sink_ref: str
     sink_type: SinkType
     file: str
@@ -96,7 +96,7 @@ class CodeCapability(BaseModel):
 
 class CrossCheckFinding(BaseModel):
     tool_name: str
-    weakness_id: Literal["W4"]
+    weakness_id: Literal["W3"]
     direction: Literal["under_declared", "over_declared"]
     declared_capabilities: list[Capability]
     code_capabilities: list[Capability]
@@ -107,14 +107,14 @@ class CrossCheckFinding(BaseModel):
 
 class AccessControlFinding(BaseModel):
     tool_name: str
-    weakness_id: Literal["W11"]
+    weakness_id: Literal["W8"]
     sink_ref: str
     reason: str
     severity: Literal["LOW", "MEDIUM", "HIGH"] = "MEDIUM"
 
 
 class DependencyFinding(BaseModel):
-    weakness_id: Literal["W5"]
+    weakness_id: Literal["W4"]
     package_name: str
     installed_version: str
     vulnerable_range: Optional[str] = None
@@ -124,7 +124,7 @@ class DependencyFinding(BaseModel):
 
 
 class StaticCredentialFinding(BaseModel):
-    weakness_id: Literal["W14"]
+    weakness_id: Literal["W10"]
     file: str
     line: int
     pattern: str
@@ -205,6 +205,12 @@ class DeclaredVsObservedMismatch(BaseModel):
     weakness_id: Optional[str] = None
 
 
+class JudgeClassification(BaseModel):
+    weakness_id: str
+    verdict: str
+    reason: str
+
+
 class PostExecutionVerification(BaseModel):
     call_id: str
     tool_name: str
@@ -214,6 +220,7 @@ class PostExecutionVerification(BaseModel):
     confirmed_weakness_ids: list[str]
     runtime_only_weakness_ids: list[str]
     reason: str
+    judge_classifications: list[JudgeClassification] = []
 
 
 class CanarySeed(BaseModel):

@@ -41,7 +41,7 @@ def test_scan_redacts_aws_and_api_keys(tmp_path: Path):
     assert "mcp_demo_abcdefghijklmnopqrstuvwxyz0123" not in blobs
     assert GITHUB not in blobs
     for finding in findings:
-        assert finding.weakness_id == "W14"
+        assert finding.weakness_id == "W10"
         assert "sha256=" in finding.snippet or "REDACTED" in finding.snippet
         assert finding.pattern in {
             "aws_access_key_id",

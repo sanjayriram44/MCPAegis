@@ -1,4 +1,4 @@
-"""Stage 3 taint analysis backends."""
+"""Lane B taint analysis backends."""
 
 from mcpaegis.static.taint.codeql_runner import run as run_codeql
 from mcpaegis.static.taint.semgrep_runner import derive_code_capabilities, run as run_semgrep

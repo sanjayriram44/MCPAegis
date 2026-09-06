@@ -1,8 +1,9 @@
-"""Stage 3: Semgrep pattern sinks (proximate) plus taint-mode dataflow (direct)."""
+"""Lane B: Semgrep pattern sinks (proximate) plus taint-mode dataflow (direct)."""
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -47,7 +48,7 @@ def run(
     If Semgrep is missing or fails, returns an empty list (static still proceeds).
     """
     target = Path(target)
-    if _semgrep_bin() is None:
+    if _semgrep_cmd() is None:
         warnings.warn(
             "semgrep is not on PATH (sudo often uses secure_path and drops the venv). "
             "Install it in the same environment as mcpaegis (`pip install semgrep`) "
@@ -320,26 +321,87 @@ _JS_TAINT_SINKS: dict[str, tuple[str, ...]] = {
 
 
 def _semgrep_bin() -> str | None:
-    """Prefer PATH, then the binary next to this interpreter (sudo -E venv)."""
+    """Return a semgrep executable path, or None. Prefer ``_semgrep_cmd``."""
+    cmd = _semgrep_cmd()
+    if cmd is None:
+        return None
+    return cmd[-1] if cmd[:2] == [sys.executable, "-m"] else cmd[0]
+
+
+def _semgrep_cmd() -> list[str] | None:
+    """Locate Semgrep even when sudo strips PATH.
+
+    Order: PATH, venv sibling of this interpreter, ``python -m semgrep``,
+    then the invoking user's PATH (``SUDO_USER``).
+    """
     found = shutil.which("semgrep")
     if found:
-        return found
-    sibling = Path(sys.executable).resolve().parent / "semgrep"
-    if sibling.is_file():
-        return str(sibling)
+        return [found]
+    # Do not resolve() the interpreter first: on macOS the venv python is a
+    # symlink into Homebrew Cellar, and that bin/ has no semgrep.
+    sibling = Path(sys.executable).parent / "semgrep"
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return [str(sibling)]
+    if _python_module_works(sys.executable, "semgrep"):
+        return [sys.executable, "-m", "semgrep"]
+    for directory in _extra_bin_dirs():
+        candidate = Path(directory) / "semgrep"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return [str(candidate)]
+        python = Path(directory) / "python3"
+        if python.is_file() and _python_module_works(str(python), "semgrep"):
+            return [str(python), "-m", "semgrep"]
     return None
+
+
+def _python_module_works(python: str, module: str) -> bool:
+    try:
+        completed = subprocess.run(
+            [python, "-c", f"import {module}"],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def _extra_bin_dirs() -> list[str]:
+    dirs: list[str] = []
+    homes: list[Path] = []
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user:
+        homes.append(Path("/home") / sudo_user)
+    home_env = os.environ.get("HOME")
+    if home_env:
+        homes.append(Path(home_env))
+    for home in homes:
+        dirs.extend(
+            [
+                str(home / "mcpaegis-venv" / "bin"),
+                str(home / ".local" / "bin"),
+            ]
+        )
+    path = os.environ.get("PATH") or ""
+    dirs.extend(part for part in path.split(":") if part)
+    seen: list[str] = []
+    for item in dirs:
+        if item and item not in seen:
+            seen.append(item)
+    return seen
 
 
 def _semgrep_json(configs: list[str], target: Path) -> list[dict[str, Any]]:
     if not configs:
         return []
-    binary = _semgrep_bin()
+    binary = _semgrep_cmd()
     if binary is None:
         return []
     # Default .semgrepignore skips tests/; --x-ignore-semgrepignore-files is
     # required to scan fixture trees and other paths Semgrep would drop.
     cmd = [
-        binary,
+        *binary,
         "--json",
         "--quiet",
         "--metrics=off",

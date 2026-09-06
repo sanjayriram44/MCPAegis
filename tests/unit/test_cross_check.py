@@ -11,7 +11,7 @@ def test_underdeclared_high_for_shell_exec_when_direct():
     )
     under = [f for f in findings if f.direction == "under_declared"]
     assert len(under) == 1
-    assert under[0].weakness_id == "W4"
+    assert under[0].weakness_id == "W3"
     assert under[0].severity == "HIGH"
     assert Capability.SHELL_EXEC in under[0].missing_from_declared
     assert under[0].missing_from_code == []

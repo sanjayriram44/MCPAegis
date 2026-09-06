@@ -1,4 +1,4 @@
-"""Stage 4: declared vs code capability cross-check (W4)."""
+"""W3 join: declared vs code capability cross-check."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def check(
             findings.append(
                 CrossCheckFinding(
                     tool_name=tool,
-                    weakness_id="W4",
+                    weakness_id="W3",
                     direction="under_declared",
                     declared_capabilities=declared_list,
                     code_capabilities=code_list,
@@ -59,7 +59,7 @@ def check(
             findings.append(
                 CrossCheckFinding(
                     tool_name=tool,
-                    weakness_id="W4",
+                    weakness_id="W3",
                     direction="over_declared",
                     declared_capabilities=declared_list,
                     code_capabilities=code_list,

@@ -16,7 +16,7 @@ def test_privileged_sink_without_auth_is_flagged():
         ]
     )
     assert len(findings) == 1
-    assert findings[0].weakness_id == "W11"
+    assert findings[0].weakness_id == "W8"
     assert findings[0].sink_ref == "sink_shell"
     assert findings[0].tool_name == "run"
     assert findings[0].severity == "MEDIUM"

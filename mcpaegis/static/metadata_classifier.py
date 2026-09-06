@@ -1,24 +1,19 @@
-"""Stage 1: tool poisoning (W1) and tool shadowing (W2)."""
+"""Lane A (code): tool poisoning fast rules (W1) and tool shadowing (W2).
+
+W1 LLM lives in ``advertisement.py``. This module keeps regex/homoglyph
+fallback plus name-distance shadowing (never LLM).
+"""
 
 from __future__ import annotations
 
 import json
 import re
 import unicodedata
-from typing import Any, Optional
+from typing import Optional
 
 from mcpaegis.core.models import PoisoningFlag, ShadowingFlag, SinkFact, ToolMetadata
 from mcpaegis.core.session import AuditSession
-from mcpaegis.core.taxonomy import SinkType, Weakness
-
-PRIVILEGED_SINKS = {
-    SinkType.SHELL_EXEC,
-    SinkType.FILE_WRITE,
-    SinkType.DB_QUERY,
-    SinkType.CREDENTIAL_READ,
-    SinkType.NETWORK_CALL,
-    SinkType.DYNAMIC_CODE_LOAD,
-}
+from mcpaegis.core.taxonomy import Weakness
 
 HOMOGLYPH_HINTS = {
     "\u0430",  # Cyrillic a
@@ -89,22 +84,39 @@ def classify(
     sink_facts: list[SinkFact] | None = None,
     extra_tools: list[tuple[str, ToolMetadata]] | None = None,
 ) -> tuple[list[PoisoningFlag], list[ShadowingFlag]]:
-    """Return poisoning and shadowing flags for the given tools.
+    """Return poisoning (fast-rule fallback) and shadowing flags.
 
     ``extra_tools`` is ``(server_label, tool)`` for cross-server shadowing.
-    LLM second pass runs only when an API key is configured and no fast rule fired
-    for a tool that touches a privileged sink (or all tools if sinks are unknown).
+    The pipeline prefers ``advertisement.classify`` for W1 when an LLM key
+    is set; this entrypoint stays regex-only so unit tests and offline
+    static still work. ``sink_facts`` is ignored (poisoning is metadata-only).
     """
+    del sink_facts
     poisoning: list[PoisoningFlag] = []
     if session is None or session.uses_category(Weakness.W1_TOOL_POISONING):
-        poisoning.extend(_poisoning_fast(tools))
-        flagged = {flag.tool_name for flag in poisoning}
-        poisoning.extend(_poisoning_llm(tools, flagged, session=session, sink_facts=sink_facts))
+        poisoning.extend(poisoning_fast(tools))
 
     shadowing: list[ShadowingFlag] = []
     if session is None or session.uses_category(Weakness.W2_TOOL_SHADOWING):
-        shadowing.extend(_shadowing(tools, extra_tools=extra_tools))
+        shadowing.extend(shadowing_flags(tools, extra_tools=extra_tools))
     return poisoning, shadowing
+
+
+def poisoning_fast(tools: list[ToolMetadata]) -> list[PoisoningFlag]:
+    """Public alias for the regex/homoglyph W1 fallback."""
+    return _poisoning_fast(tools)
+
+
+def shadowing_flags(
+    tools: list[ToolMetadata],
+    *,
+    extra_tools: list[tuple[str, ToolMetadata]] | None = None,
+) -> list[ShadowingFlag]:
+    return _shadowing(tools, extra_tools=extra_tools)
+
+
+def clip_text(text: str, limit: int = 240) -> str:
+    return _clip(text, limit=limit)
 
 
 def _corpus(tool: ToolMetadata) -> str:
@@ -172,118 +184,6 @@ def _first_homoglyph_span(text: str) -> str:
 def _clip(text: str, limit: int = 240) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     return text if len(text) <= limit else text[: limit - 3] + "..."
-
-
-def _privileged_tools(sink_facts: list[SinkFact] | None) -> Optional[set[str]]:
-    if sink_facts is None:
-        return None
-    return {s.tool_name for s in sink_facts if s.tool_name and s.sink_type in PRIVILEGED_SINKS}
-
-
-def _poisoning_llm(
-    tools: list[ToolMetadata],
-    already_flagged: set[str],
-    *,
-    session: AuditSession | None,
-    sink_facts: list[SinkFact] | None,
-) -> list[PoisoningFlag]:
-    if session is None or not session.llm.enabled:
-        return []
-    privileged = _privileged_tools(sink_facts)
-    candidates = [
-        tool
-        for tool in tools
-        if tool.name not in already_flagged and (privileged is None or tool.name in privileged)
-    ]
-    if not candidates:
-        return []
-    try:
-        from mcpaegis.llm.client import LLMClient
-    except ImportError:
-        return []
-
-    client = _make_llm_client(session)
-    if client is None:
-        return []
-
-    flags: list[PoisoningFlag] = []
-    for tool in candidates:
-        pair = _semantic_prompt(tool)
-        try:
-            raw = client.complete_json(prompt=pair)
-        except TypeError:
-            try:
-                raw = client.complete(prompt=pair)
-            except Exception:
-                return flags
-        except Exception:
-            return flags
-        parsed = _parse_llm_poisoning(tool.name, raw)
-        if parsed:
-            flags.append(parsed)
-    return flags
-
-
-def _make_llm_client(session: AuditSession) -> Any | None:
-    try:
-        from mcpaegis.llm.client import LLMClient
-    except ImportError:
-        return None
-    for kwargs in (
-        {"config": session.llm},
-        {"llm": session.llm},
-        {"api_key": session.llm.api_key, "base_url": session.llm.base_url, "model": session.llm.model},
-        {},
-    ):
-        try:
-            return LLMClient(**kwargs)
-        except TypeError:
-            continue
-        except Exception:
-            return None
-    return None
-
-
-def _semantic_prompt(tool: ToolMetadata, privileged_hints: str | None = None):
-    from mcpaegis.llm.prompts import build_metadata_semantic_prompt
-
-    return build_metadata_semantic_prompt(
-        tool_name=tool.name,
-        description=tool.description,
-        input_schema=tool.input_schema,
-        privileged_hints=privileged_hints,
-    )
-
-
-def _parse_llm_poisoning(tool_name: str, raw: Any) -> Optional[PoisoningFlag]:
-    if isinstance(raw, dict):
-        data = raw
-    else:
-        text = raw if isinstance(raw, str) else json.dumps(raw)
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", text, re.DOTALL)
-            if not match:
-                return None
-            try:
-                data = json.loads(match.group(0))
-            except json.JSONDecodeError:
-                return None
-    if not isinstance(data, dict) or not data.get("poisoned"):
-        return None
-    severity = str(data.get("severity") or "MEDIUM").upper()
-    if severity not in {"LOW", "MEDIUM", "HIGH"}:
-        severity = "MEDIUM"
-    return PoisoningFlag(
-        tool_name=tool_name,
-        weakness_id="W1",
-        pattern_matched=str(data.get("reason") or "llm_semantic"),
-        detection_tier="llm_semantic",
-        severity=severity,  # type: ignore[arg-type]
-        snippet=_clip(str(data.get("snippet") or "")),
-        confidence=0.55,
-    )
 
 
 def normalize_tool_name(name: str) -> str:

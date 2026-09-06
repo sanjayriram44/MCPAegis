@@ -1,4 +1,4 @@
-"""Stage 5: privileged sinks without an obvious auth check (W11)."""
+"""W8: privileged sinks without an obvious auth check."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def check(sinks: list[SinkFact]) -> list[AccessControlFinding]:
         findings.append(
             AccessControlFinding(
                 tool_name=tool,
-                weakness_id="W11",
+                weakness_id="W8",
                 sink_ref=sink.id,
                 reason=(
                     f"privileged sink {sink.sink_type.value} in {sink.function_name} "

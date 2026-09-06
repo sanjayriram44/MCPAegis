@@ -1,4 +1,4 @@
-"""Static analysis pipeline (stages 0–7)."""
+"""Static analysis pipeline (discovery, parallel lanes, joins, report)."""
 
 from mcpaegis.static.pipeline import run
 

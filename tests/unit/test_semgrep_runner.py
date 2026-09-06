@@ -161,6 +161,18 @@ def test_sink_snippet_uses_source_line_not_semgrep_window(tmp_path: Path):
     assert "requires login" not in snippet
 
 
+def test_semgrep_cmd_uses_python_module_when_path_empty(monkeypatch, tmp_path):
+    from mcpaegis.static.taint import semgrep_runner as runner
+
+    monkeypatch.setattr(runner.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(runner.sys, "executable", str(tmp_path / "python"))
+    monkeypatch.setattr(runner, "_python_module_works", lambda python, module: python.endswith("python") and module == "semgrep")
+    monkeypatch.delenv("SUDO_USER", raising=False)
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.setenv("PATH", "")
+    assert runner._semgrep_cmd() == [str(tmp_path / "python"), "-m", "semgrep"]
+
+
 def test_semgrep_json_scans_untracked_test_fixtures():
     import shutil
 

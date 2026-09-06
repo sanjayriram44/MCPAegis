@@ -1,4 +1,4 @@
-"""Stage 3 (v2 backend stub): same interface as semgrep_runner."""
+"""Lane B CodeQL stub: same interface as semgrep_runner (always empty)."""
 
 from __future__ import annotations
 

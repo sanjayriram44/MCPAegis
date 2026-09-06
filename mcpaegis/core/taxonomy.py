@@ -19,25 +19,17 @@ class Capability(str, Enum):
 
 
 class Weakness(str, Enum):
-    # v1 — implement detection for these
     W1_TOOL_POISONING = "W1"  # Layer A, static
     W2_TOOL_SHADOWING = "W2"  # Layer A, static
-    W4_OVERPRIVILEGED = "W4"  # Layer A, static (cross-check)
-    W5_SUPPLY_CHAIN = "W5"  # Layer A, static (delegated to SCA tools)
-    W6_COMMAND_INJECTION = "W6"  # Layer B, static+dynamic (includes SQL sub-type)
-    W7_PATH_TRAVERSAL = "W7"  # Layer B, static+dynamic
-    W9_SSRF = "W9"  # Layer B, static+dynamic
-    W11_ACCESS_CONTROL = "W11"  # Layer B, static
-    W12_TOOL_EXEC_HIJACK = "W12"  # Layer D, dynamic only
-    W14_STATIC_CRED_EXPOSURE = "W14"  # Layer C, static
-    W15_RUNTIME_CRED_LEAKAGE = "W15"  # Layer C, dynamic (env/file canary in MCP response)
-
-    # v2 — deferred, enum values reserved, no detection logic yet
-    W3_RUG_PULL = "W3"
-    W10_SCHEMA_BYPASS = "W10"
-    W13_INDIRECT_PROMPT_INJECTION = "W13"  # argument-echo / corpus IPI — no detector
-    W16_CONTEXT_OVERSHARING = "W16"
-    W17_HOST_SIDE_ATTACKS = "W17"
+    W3_OVERPRIVILEGED = "W3"  # Layer A, static (cross-check)
+    W4_SUPPLY_CHAIN = "W4"  # Layer A, static (delegated to SCA tools)
+    W5_COMMAND_INJECTION = "W5"  # Layer B, static+dynamic (includes SQL sub-type)
+    W6_PATH_TRAVERSAL = "W6"  # Layer B, static+dynamic
+    W7_SSRF = "W7"  # Layer B, static+dynamic
+    W8_ACCESS_CONTROL = "W8"  # Layer B, static
+    W9_TOOL_EXEC_HIJACK = "W9"  # Layer D, dynamic only
+    W10_CREDENTIAL_EXPOSURE = "W10"  # Layer C: static regex and/or runtime env/file canary
+    W10_STATIC_CRED_EXPOSURE = "W10"  # alias of W10_CREDENTIAL_EXPOSURE
 
 
 class SinkType(str, Enum):
@@ -46,7 +38,7 @@ class SinkType(str, Enum):
     FILE_WRITE = "file_write"  # -> Capability.FS_WRITE
     NETWORK_CALL = "network_call"  # -> Capability.NET_OUTBOUND
     DB_QUERY = "db_query"  # -> Capability.DB_ACCESS
-    DYNAMIC_CODE_LOAD = "dynamic_code_load"  # eval/exec/dynamic import — flag under W6
+    DYNAMIC_CODE_LOAD = "dynamic_code_load"  # eval/exec/dynamic import — flag under W5
     CREDENTIAL_READ = "credential_read"  # os.environ, keyring, etc. -> Capability.CREDENTIAL_HANDLING
 
 

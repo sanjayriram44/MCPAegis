@@ -1,4 +1,4 @@
-"""Stage 6a: gitleaks-style secret regexes with redacted snippets (W14)."""
+"""Lane C: gitleaks-style secret regexes with redacted snippets (W10 static)."""
 
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ def _scan_text(file: str, text: str) -> list[StaticCredentialFinding]:
                 secret = match.group(0)
                 findings.append(
                     StaticCredentialFinding(
-                        weakness_id="W14",
+                        weakness_id="W10",
                         file=file,
                         line=line_no,
                         pattern=pattern_name,
