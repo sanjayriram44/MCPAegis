@@ -7,7 +7,7 @@ This guide covers two extension points: **Semgrep sink rules** used by static ta
 Packs live next to the runner:
 
 - `mcpaegis/static/taint/rules/python.yaml` / `javascript.yaml` — **pattern** rules. Hits become `SinkFact.confidence="proximate"` (reachable / co-occurrence, not proven dataflow).
-- `mcpaegis/static/taint/rules/taint/python-taint.yaml` / `javascript-taint.yaml` — **`mode: taint`**. Hits become `confidence="direct"` (tool-parameter source reached the sink). Stage 3.5 emits W6/W7/W9 only from these.
+- `mcpaegis/static/taint/rules/taint/python-taint.yaml` / `javascript-taint.yaml` — **`mode: taint`**. Hits become `confidence="direct"` (tool-parameter source reached the sink). Lane B named W5/W6/W7 findings use only these.
 
 The runner runs the pattern files, then the taint directory (plus generated YAML). Generated sources are **per handler file** (`paths.include` + `def <handler>(...)`) so a same-named function in another module is not a taint source. Generated taint rules copy **sink-type sanitizers** (e.g. `shlex.quote` for `shell_exec` only — quoting does not sanitize `open`/`eval`). Shared helpers emit one `SinkFact` per attributing tool; `direct` wins only for the tool whose parameter actually reached the sink.
 
@@ -24,7 +24,7 @@ Every rule **must** set `metadata.sink_type` to a `SinkType` value:
 | `file_write` | `FS_WRITE` (`C2`) | `open(..., "w")`, `Path.write_text`, `fs.writeFile` |
 | `network_call` | `NET_OUTBOUND` (`C4`) | `requests.*`, `httpx.*`, `urllib.request.urlopen` |
 | `db_query` | `DB_ACCESS` (`C6`) | `cursor.execute`, `sqlite3.connect` |
-| `dynamic_code_load` | *(no capability map; flagged under W6)* | `eval`, `exec`, `importlib.import_module` |
+| `dynamic_code_load` | *(no capability map; flagged under W5)* | `eval`, `exec`, `importlib.import_module` |
 | `credential_read` | `CREDENTIAL_HANDLING` (`C7`) | `os.environ`, `os.getenv`, `keyring.get_password` |
 
 `SINK_TO_CAPABILITY` in `mcpaegis/core/taxonomy.py` is the source of truth for capability derivation. `dynamic_code_load` is intentionally absent from that map.
@@ -51,7 +51,7 @@ Conventions:
 - **severity** — Semgrep’s own severity (`ERROR` / `WARNING`); MCPAegis weakness severity is assigned later (cross-check, merger, writers).
 - Prefer `pattern-either` over a single overly-broad pattern.
 
-After adding a **pattern** rule, run static analysis against `tests/fixtures/unrelated_cleanup` and expect a `proximate` sink (no W6). After adding a **taint** rule, use `tests/fixtures/command_injection` / `path_traversal` / `ssrf` / `eval_format` and expect a `direct` W6/W7/W9 (`eval_format` is `dynamic_code_load` → W6).
+After adding a **pattern** rule, run static analysis against `tests/fixtures/unrelated_cleanup` and expect a `proximate` sink (no W5). After adding a **taint** rule, use `tests/fixtures/command_injection` / `path_traversal` / `ssrf` / `eval_format` and expect a `direct` W5/W6/W7 (`eval_format` is `dynamic_code_load` → W5).
 
 Package data includes `static/taint/rules/*.yaml` and `static/taint/rules/taint/*.yaml`.
 
@@ -68,19 +68,17 @@ Enums live in `mcpaegis/core/taxonomy.py`.
 
 ### Adding a weakness (finding)
 
-1. Add `Wxx_NAME = "Wxx"` to `Weakness`.
-   - v1 detectors: implement a stage and emit the matching model (`PoisoningFlag`, `CrossCheckFinding`, `RuntimeFinding`, …).
-   - v2 / deferred: add the enum value only; do **not** add detection logic (reserved IDs: W3, W10, W16, W17).
+1. Add `Wxx_NAME = "Wxx"` to `Weakness` and implement a stage that emits the matching model (`PoisoningFlag`, `CrossCheckFinding`, `RuntimeFinding`, …). Do not reserve unused IDs.
 2. Add a title in `WEAKNESS_TITLES` and a default severity in `_DEFAULT_SEVERITY` inside `mcpaegis/output/findings.py`.
 3. SARIF publishes every `Weakness` member as a rule even when a run has no results — new IDs appear automatically.
 4. Wire `--categories Wxx` via the existing `Weakness` enum (`AuditSession.parse_categories`).
 
 ### Adding a sink type
 
-1. Add `SinkType` and, if it should participate in W4 cross-check, map it in `SINK_TO_CAPABILITY`.
+1. Add `SinkType` and, if it should participate in W3 cross-check, map it in `SINK_TO_CAPABILITY`.
 2. Add Semgrep rules with `metadata.sink_type` matching the enum **value** (snake_case string).
 3. Privileged-sink heuristics:
-   - W11 access control: `PRIVILEGED_SINKS` in `access_control_check.py`.
+   - W8 access control: `PRIVILEGED_SINKS` in `access_control_check.py`.
    - W1 LLM second pass: `PRIVILEGED_SINKS` in `metadata_classifier.py`.
 
 ### Combining pipelines

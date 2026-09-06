@@ -1,10 +1,20 @@
 # Lima Ubuntu ARM64 runbook (`mcpaegis runtime`)
 
-`mcpaegis runtime` must run on a **Linux kernel** that can load BCC/eBPF. Darwin and Docker Desktop’s LinuxKit VM do not count: the CLI still runs on macOS and exits.
+On an **Apple Silicon Mac**, clone the repo, `pip install -e ".[static]"`, then either:
+
+```bash
+mcpaegis          # TUI
+# or
+mcpaegis full ./tests/fixtures/command_injection --output ~/mcpaegis-out/ci
+```
+
+Both install Lima (Homebrew) if needed, start the Ubuntu ARM64 guest, bootstrap the guest venv, and run runtime with `sudo -E`. Static stays on macOS so Semgrep is not lost under `sudo` `secure_path`. The rest of this file is the fallback if you want to drive Lima yourself.
+
+Do **not** `limactl shell` just to run analysis — the CLI/TUI do that.
 
 This guest is a **stock Ubuntu 24.04 ARM64** VM via Lima’s `vz` driver (Apple Virtualization.framework, default since Lima v1.0 on macOS ≥13.5). The MCP server under test is a **local process** in a nested cgroup. There is no Docker.
 
-Config: [`lima.yaml`](../lima.yaml) at the repo root.
+Config: [`lima.yaml`](../lima.yaml) at the repo root (also packaged as `mcpaegis/lima/lima.yaml`).
 
 ## Requirements
 
@@ -14,7 +24,7 @@ Config: [`lima.yaml`](../lima.yaml) at the repo root.
 
 Intel Macs cannot run an ARM guest with `vz`. Use a native `x86_64` Ubuntu image instead (not this file).
 
-Do **not** run `mcpaegis runtime` in a macOS terminal.
+`mcpaegis runtime` / `mcpaegis full` on macOS now start Lima automatically. You only need this runbook if automation fails.
 
 ## 1. Install Lima (macOS)
 
@@ -139,10 +149,10 @@ limactl delete -f mcpaegis # destroy this instance’s disk
 | `VMTYPE=qemu` | Lima <1.0 or macOS <13.5. Upgrade; this YAML requires `vz`. |
 | BCC / headers mismatch | Reinstall `"linux-headers-$(uname -r)"` and `python3-bpfcc` after a guest kernel update. |
 | `incomplete definition of type 'struct tracepoint__…'` | Old BPF used `TRACEPOINT_PROBE` (needs debugfs format files). Current `bpf_programs.c` uses `raw_tracepoint/sys_enter` plus `kernel_clone`. Pull latest and retry. |
-| Runtime trees are python3 forks only, `file_events`/`net_events` empty, zero findings | Old `syscall__openat` kprobes miss ARM64 (`openat2` / `execveat`). Current BPF uses `raw_tracepoint/sys_enter`. Re-run runtime after pulling. Also Stage 4 now confirms W6/W7/W9 when the observed tree matches the static profile, not only when static missed the capability. |
+| Runtime trees are python3 forks only, `file_events`/`net_events` empty, zero findings | Old `syscall__openat` kprobes miss ARM64 (`openat2` / `execveat`). Current BPF uses `raw_tracepoint/sys_enter`. Re-run runtime after pulling. Also Stage 4 now confirms W5/W6/W7 when the observed tree matches the static profile, not only when static missed the capability. |
 | `Need super-user privileges to run` / `Failed to load program: Operation not permitted` | BCC kprobes and nested cgroups need root. `sudo -E "$HOME/mcpaegis-venv/bin/mcpaegis" runtime …` — not a bare `sudo mcpaegis`. |
 | `MCP server exited immediately` / empty stderr / `FastMCP is missing` | `pip install mcp` pulled 2.x. Pin 1.x: `pip install 'mcp>=1.2,<2'`. See `./out/canaries/sandbox.stderr`. |
-| Static `sink_facts` empty / LOW W4 over_declared on `run_cmd` | Semgrep not visible to the process. `sudo` uses `secure_path`. Current code looks next to `sys.executable`. Prefer `mcpaegis static` **without** sudo, then `sudo -E … runtime`. |
+| Static `sink_facts` empty / LOW W3 over_declared on `run_cmd` | Semgrep not visible to the process. `sudo` uses `secure_path`. Current code looks next to `sys.executable`. Prefer `mcpaegis static` **without** sudo, then `sudo -E … runtime`. |
 | `Broken pipe` / handshake failed | Server died after spawn. Same stderr file. |
 | `cannot create a nested cgroup` | Not root, or cgroup v2 missing. `test -f /sys/fs/cgroup/cgroup.controllers`. |
 | Intel Mac + this YAML | `vz` cannot run `aarch64` on Intel. Native x86_64 Ubuntu, not this file. |
