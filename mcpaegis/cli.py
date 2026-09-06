@@ -1,7 +1,9 @@
-"""Typer CLI entrypoint: static / runtime / full / report."""
+"""Typer CLI entrypoint: static / runtime / full / report. Bare `mcpaegis` opens the TUI."""
 
 from __future__ import annotations
 
+import platform
+import sys
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -17,10 +19,29 @@ from mcpaegis.output.markdown_writer import print_report
 
 app = typer.Typer(
     name="mcpaegis",
-    help="Static and dynamic security analysis of local MCP servers.",
-    no_args_is_help=True,
+    help="Static and dynamic security analysis of local MCP servers. "
+    "Run with no arguments to open the TUI.",
+    no_args_is_help=False,
     add_completion=False,
+    invoke_without_command=True,
 )
+
+
+@app.callback()
+def _root(ctx: typer.Context) -> None:
+    """Open the TUI when no subcommand is given."""
+    if ctx.invoked_subcommand is not None or ctx.resilient_parsing:
+        return
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        typer.echo(
+            "Open a terminal and run `mcpaegis` for the TUI, "
+            "or use `mcpaegis static|runtime|full PATH`.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    from mcpaegis.tui.app import run_tui
+
+    run_tui()
 
 
 class StaticFormat(str, Enum):
@@ -51,6 +72,8 @@ def _session(
     format: str,
     categories: Optional[str],
     no_color: bool,
+    llm_model: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
 ) -> AuditSession:
     try:
         return AuditSession.from_cli(
@@ -58,6 +81,8 @@ def _session(
             format=format,
             categories=categories,
             no_color=no_color,
+            llm_model=llm_model,
+            llm_base_url=llm_base_url,
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -92,6 +117,54 @@ def _runtime_report_path(session: AuditSession) -> Path:
     return session.output_dir / RUNTIME_REPORT_NAME
 
 
+def _run_via_lima(
+    mode: str,
+    path: Path,
+    *,
+    test_script: Optional[Path],
+    timeout: Optional[int],
+    output: Optional[Path],
+    fail_on: Optional[FailOnSeverity],
+    categories: Optional[str] = None,
+    no_color: bool = False,
+    llm_model: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+) -> None:
+    """Darwin: static on the Mac, runtime inside Lima, merge locally."""
+    from mcpaegis.lima.orchestrate import run_analysis
+    from mcpaegis.lima.paths import default_output_dir
+
+    out = output if output is not None else default_output_dir(Path(path).expanduser().resolve())
+    session = _session(
+        output=out,
+        format="json",
+        categories=categories,
+        no_color=no_color,
+        llm_model=llm_model,
+        llm_base_url=llm_base_url,
+    )
+
+    def emit(line: str) -> None:
+        typer.echo(line, err=True)
+
+    result = run_analysis(
+        mode,  # type: ignore[arg-type]
+        path,
+        output=session.output_dir,
+        test_script=test_script,
+        timeout=timeout,
+        log=emit,
+        session=session,
+    )
+    if result.error:
+        _echo_error(result.error)
+        raise typer.Exit(code=1)
+    shown = result.combined_report or result.dynamic_report or result.static_report
+    if shown is not None:
+        _print(shown, session)
+        _fail_on_exit(shown, fail_on, session)
+
+
 @app.command()
 def static(
     path: Path = typer.Argument(..., help="Path to the local MCP server source."),
@@ -100,7 +173,7 @@ def static(
     categories: Optional[str] = typer.Option(
         None,
         "--categories",
-        help="Comma-separated weakness IDs to include, e.g. W1,W4.",
+        help="Comma-separated weakness IDs to include, e.g. W1,W3.",
     ),
     fail_on: Optional[FailOnSeverity] = typer.Option(
         None,
@@ -108,11 +181,28 @@ def static(
         help="Exit non-zero if any finding at or above this severity exists.",
     ),
     no_color: bool = typer.Option(False, "--no-color", help="Disable ANSI color."),
+    llm_model: Optional[str] = typer.Option(
+        None,
+        "--llm-model",
+        help="Chat Completions model id (overrides MCPAEGIS_LLM_MODEL).",
+    ),
+    llm_base_url: Optional[str] = typer.Option(
+        None,
+        "--llm-base-url",
+        help="OpenAI-compatible base URL (overrides MCPAEGIS_LLM_BASE_URL).",
+    ),
 ) -> None:
     """Run the static analysis pipeline."""
     from mcpaegis.static.pipeline import run as run_static
 
-    session = _session(output=output, format=format.value, categories=categories, no_color=no_color)
+    session = _session(
+        output=output,
+        format=format.value,
+        categories=categories,
+        no_color=no_color,
+        llm_model=llm_model,
+        llm_base_url=llm_base_url,
+    )
     report = run_static(path, session)
     _print(report, session)
     _fail_on_exit(report, fail_on, session)
@@ -141,11 +231,31 @@ def runtime(
         help="Exit non-zero if any finding at or above this severity exists.",
     ),
     no_color: bool = typer.Option(False, "--no-color", help="Disable ANSI color."),
+    llm_model: Optional[str] = typer.Option(
+        None,
+        "--llm-model",
+        help="Chat Completions model id (overrides MCPAEGIS_LLM_MODEL).",
+    ),
+    llm_base_url: Optional[str] = typer.Option(
+        None,
+        "--llm-base-url",
+        help="OpenAI-compatible base URL (overrides MCPAEGIS_LLM_BASE_URL).",
+    ),
 ) -> None:
-    """Run the runtime (dynamic) analysis pipeline on Linux."""
+    """Run the runtime (dynamic) analysis pipeline (Lima on macOS, in-process on Linux)."""
+    if platform.system() == "Darwin":
+        _run_via_lima("runtime", path, test_script=test_script, timeout=timeout, output=output, fail_on=fail_on)
+        return
     from mcpaegis.dynamic.pipeline import run as run_dynamic
 
-    session = _session(output=output, format=format.value, categories=None, no_color=no_color)
+    session = _session(
+        output=output,
+        format=format.value,
+        categories=None,
+        no_color=no_color,
+        llm_model=llm_model,
+        llm_base_url=llm_base_url,
+    )
     static_path = _static_report_path(session)
     if static_path.is_file():
         static_arg: Path | None = static_path
@@ -190,7 +300,7 @@ def full(
     categories: Optional[str] = typer.Option(
         None,
         "--categories",
-        help="Comma-separated weakness IDs to include, e.g. W1,W4.",
+        help="Comma-separated weakness IDs to include, e.g. W1,W3.",
     ),
     fail_on: Optional[FailOnSeverity] = typer.Option(
         None,
@@ -198,12 +308,43 @@ def full(
         help="Exit non-zero if any finding at or above this severity exists.",
     ),
     no_color: bool = typer.Option(False, "--no-color", help="Disable ANSI color."),
+    llm_model: Optional[str] = typer.Option(
+        None,
+        "--llm-model",
+        help="Chat Completions model id (overrides MCPAEGIS_LLM_MODEL).",
+    ),
+    llm_base_url: Optional[str] = typer.Option(
+        None,
+        "--llm-base-url",
+        help="OpenAI-compatible base URL (overrides MCPAEGIS_LLM_BASE_URL).",
+    ),
 ) -> None:
     """Run static analysis, then runtime, then merge reports."""
+    if platform.system() == "Darwin":
+        _run_via_lima(
+            "full",
+            path,
+            test_script=test_script,
+            timeout=timeout,
+            output=output,
+            fail_on=fail_on,
+            categories=categories,
+            no_color=no_color,
+            llm_model=llm_model,
+            llm_base_url=llm_base_url,
+        )
+        return
     from mcpaegis.dynamic.pipeline import run as run_dynamic
     from mcpaegis.static.pipeline import run as run_static
 
-    session = _session(output=output, format=format.value, categories=categories, no_color=no_color)
+    session = _session(
+        output=output,
+        format=format.value,
+        categories=categories,
+        no_color=no_color,
+        llm_model=llm_model,
+        llm_base_url=llm_base_url,
+    )
     static_report = run_static(path, session)
     _print(static_report, session)
 
