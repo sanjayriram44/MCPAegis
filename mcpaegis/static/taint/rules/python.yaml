@@ -1,0 +1,124 @@
+rules:
+  - id: mcpaegis.python.shell_exec.subprocess
+    message: Process execution sink (subprocess)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      sink_type: shell_exec
+    pattern-either:
+      - pattern: subprocess.$METHOD(...)
+      - pattern: subprocess.run(...)
+      - pattern: subprocess.Popen(...)
+      - pattern: subprocess.call(...)
+      - pattern: subprocess.check_output(...)
+      - pattern: subprocess.check_call(...)
+      - pattern: os.system(...)
+      - pattern: os.popen(...)
+      - pattern: os.execv(...)
+      - pattern: os.execve(...)
+      - pattern: os.execl(...)
+      - pattern: os.spawnl(...)
+      - pattern: os.spawnv(...)
+      - pattern: asyncio.create_subprocess_shell(...)
+      - pattern: asyncio.create_subprocess_exec(...)
+
+  - id: mcpaegis.python.file_read.open
+    message: Filesystem read sink
+    languages: [python]
+    severity: WARNING
+    metadata:
+      sink_type: file_read
+    pattern-either:
+      - pattern: open($PATH)
+      - pattern: open($PATH, ...)
+      - pattern: open($PATH, "r", ...)
+      - pattern: open($PATH, 'r', ...)
+      - pattern: open($PATH, "rb", ...)
+      - pattern: pathlib.Path($PATH).read_text(...)
+      - pattern: pathlib.Path($PATH).read_bytes(...)
+      - pattern: Path($PATH).read_text(...)
+      - pattern: Path($PATH).read_bytes(...)
+
+  - id: mcpaegis.python.file_write.open
+    message: Filesystem write sink
+    languages: [python]
+    severity: WARNING
+    metadata:
+      sink_type: file_write
+    pattern-either:
+      - pattern: open($PATH, "w", ...)
+      - pattern: open($PATH, "wb", ...)
+      - pattern: open($PATH, "a", ...)
+      - pattern: open($PATH, "ab", ...)
+      - pattern: open($PATH, "x", ...)
+      - pattern: pathlib.Path($PATH).write_text(...)
+      - pattern: pathlib.Path($PATH).write_bytes(...)
+      - pattern: Path($PATH).write_text(...)
+      - pattern: Path($PATH).write_bytes(...)
+      - pattern: Path($PATH).unlink(...)
+      - pattern: os.remove(...)
+      - pattern: os.unlink(...)
+      - pattern: shutil.rmtree(...)
+      - pattern: shutil.copy(...)
+      - pattern: shutil.move(...)
+
+  - id: mcpaegis.python.network_call
+    message: Outbound network sink
+    languages: [python]
+    severity: WARNING
+    metadata:
+      sink_type: network_call
+    pattern-either:
+      - pattern: requests.$METHOD(...)
+      - pattern: httpx.$METHOD(...)
+      - pattern: urllib.request.urlopen(...)
+      - pattern: urllib.request.Request(...)
+      - pattern: aiohttp.ClientSession(...).$METHOD(...)
+      - pattern: socket.create_connection(...)
+      - pattern: socket.socket(...).connect(...)
+      - pattern: http.client.HTTPConnection(...)
+      - pattern: http.client.HTTPSConnection(...)
+
+  - id: mcpaegis.python.db_query
+    message: Database query sink
+    languages: [python]
+    severity: WARNING
+    metadata:
+      sink_type: db_query
+    pattern-either:
+      - pattern: $CUR.execute(...)
+      - pattern: $CUR.executemany(...)
+      - pattern: sqlite3.connect(...)
+      - pattern: psycopg2.connect(...)
+      - pattern: pymongo.MongoClient(...)
+      - pattern: sqlalchemy.create_engine(...)
+      - pattern: $ENGINE.execute(...)
+      - pattern: $SESSION.execute(...)
+
+  - id: mcpaegis.python.dynamic_code_load
+    message: Dynamic code load sink
+    languages: [python]
+    severity: ERROR
+    metadata:
+      sink_type: dynamic_code_load
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+      - pattern: compile(...)
+      - pattern: __import__(...)
+      - pattern: importlib.import_module(...)
+      - pattern: importlib.util.module_from_spec(...)
+
+  - id: mcpaegis.python.credential_read
+    message: Credential/secret read sink
+    languages: [python]
+    severity: WARNING
+    metadata:
+      sink_type: credential_read
+    pattern-either:
+      - pattern: os.environ[$KEY]
+      - pattern: os.environ.get(...)
+      - pattern: os.getenv(...)
+      - pattern: keyring.get_password(...)
+      - pattern: keyring.get_credential(...)
+      - pattern: dotenv.load_dotenv(...)

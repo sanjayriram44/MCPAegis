@@ -1,0 +1,125 @@
+rules:
+  - id: mcpaegis.js.taint.shell_exec
+    mode: taint
+    message: Tool parameter flows into a process-execution sink
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      sink_type: shell_exec
+    pattern-sources:
+      - pattern: server.tool($NAME, $SCHEMA, (...))
+      - pattern: server.tool($NAME, (...))
+      - pattern: mcp.tool($NAME, (...))
+    pattern-sinks:
+      - pattern: child_process.exec(...)
+      - pattern: child_process.execSync(...)
+      - pattern: child_process.spawn(...)
+      - pattern: child_process.spawnSync(...)
+      - pattern: child_process.execFile(...)
+      - pattern: child_process.fork(...)
+      - pattern: exec(...)
+      - pattern: execSync(...)
+      - pattern: spawn(...)
+      - pattern: spawnSync(...)
+    pattern-sanitizers:
+      - pattern: shellQuote(...)
+
+  - id: mcpaegis.js.taint.file_read
+    mode: taint
+    message: Tool parameter flows into a filesystem-read sink
+    languages: [javascript, typescript]
+    severity: WARNING
+    metadata:
+      sink_type: file_read
+    pattern-sources:
+      - pattern: server.tool($NAME, $SCHEMA, (...))
+      - pattern: server.tool($NAME, (...))
+      - pattern: mcp.tool($NAME, (...))
+    pattern-sinks:
+      - pattern: fs.readFile(...)
+      - pattern: fs.readFileSync(...)
+      - pattern: fs.promises.readFile(...)
+      - pattern: fs.createReadStream(...)
+      - pattern: readFile(...)
+      - pattern: readFileSync(...)
+
+  - id: mcpaegis.js.taint.file_write
+    mode: taint
+    message: Tool parameter flows into a filesystem-write sink
+    languages: [javascript, typescript]
+    severity: WARNING
+    metadata:
+      sink_type: file_write
+    pattern-sources:
+      - pattern: server.tool($NAME, $SCHEMA, (...))
+      - pattern: server.tool($NAME, (...))
+      - pattern: mcp.tool($NAME, (...))
+    pattern-sinks:
+      - pattern: fs.writeFile(...)
+      - pattern: fs.writeFileSync(...)
+      - pattern: fs.appendFile(...)
+      - pattern: fs.appendFileSync(...)
+      - pattern: fs.unlink(...)
+      - pattern: fs.unlinkSync(...)
+      - pattern: fs.rm(...)
+      - pattern: fs.rmSync(...)
+      - pattern: fs.promises.writeFile(...)
+      - pattern: writeFile(...)
+      - pattern: writeFileSync(...)
+
+  - id: mcpaegis.js.taint.network_call
+    mode: taint
+    message: Tool parameter flows into an outbound network sink
+    languages: [javascript, typescript]
+    severity: WARNING
+    metadata:
+      sink_type: network_call
+    pattern-sources:
+      - pattern: server.tool($NAME, $SCHEMA, (...))
+      - pattern: server.tool($NAME, (...))
+      - pattern: mcp.tool($NAME, (...))
+    pattern-sinks:
+      - pattern: fetch(...)
+      - pattern: axios(...)
+      - pattern: axios.$METHOD(...)
+      - pattern: http.request(...)
+      - pattern: https.request(...)
+      - pattern: http.get(...)
+      - pattern: https.get(...)
+      - pattern: net.connect(...)
+      - pattern: net.createConnection(...)
+      - pattern: got(...)
+
+  - id: mcpaegis.js.taint.db_query
+    mode: taint
+    message: Tool parameter flows into a database-query sink
+    languages: [javascript, typescript]
+    severity: WARNING
+    metadata:
+      sink_type: db_query
+    pattern-sources:
+      - pattern: server.tool($NAME, $SCHEMA, (...))
+      - pattern: server.tool($NAME, (...))
+      - pattern: mcp.tool($NAME, (...))
+    pattern-sinks:
+      - pattern: $DB.query(...)
+      - pattern: $DB.execute(...)
+      - pattern: $CLIENT.query(...)
+
+  - id: mcpaegis.js.taint.dynamic_code_load
+    mode: taint
+    message: Tool parameter flows into a dynamic-code-load sink
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      sink_type: dynamic_code_load
+    pattern-sources:
+      - pattern: server.tool($NAME, $SCHEMA, (...))
+      - pattern: server.tool($NAME, (...))
+      - pattern: mcp.tool($NAME, (...))
+    pattern-sinks:
+      - pattern: eval(...)
+      - pattern: Function(...)
+      - pattern: new Function(...)
+      - pattern: vm.runInNewContext(...)
+      - pattern: vm.runInThisContext(...)

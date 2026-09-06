@@ -1,0 +1,110 @@
+rules:
+  - id: mcpaegis.js.shell_exec.child_process
+    message: Process execution sink (child_process)
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      sink_type: shell_exec
+    pattern-either:
+      - pattern: child_process.exec(...)
+      - pattern: child_process.execSync(...)
+      - pattern: child_process.spawn(...)
+      - pattern: child_process.spawnSync(...)
+      - pattern: child_process.execFile(...)
+      - pattern: child_process.fork(...)
+      - pattern: exec(...)
+      - pattern: execSync(...)
+      - pattern: spawn(...)
+      - pattern: spawnSync(...)
+
+  - id: mcpaegis.js.file_read
+    message: Filesystem read sink
+    languages: [javascript, typescript]
+    severity: WARNING
+    metadata:
+      sink_type: file_read
+    pattern-either:
+      - pattern: fs.readFile(...)
+      - pattern: fs.readFileSync(...)
+      - pattern: fs.promises.readFile(...)
+      - pattern: fs.createReadStream(...)
+      - pattern: readFile(...)
+      - pattern: readFileSync(...)
+
+  - id: mcpaegis.js.file_write
+    message: Filesystem write sink
+    languages: [javascript, typescript]
+    severity: WARNING
+    metadata:
+      sink_type: file_write
+    pattern-either:
+      - pattern: fs.writeFile(...)
+      - pattern: fs.writeFileSync(...)
+      - pattern: fs.appendFile(...)
+      - pattern: fs.appendFileSync(...)
+      - pattern: fs.unlink(...)
+      - pattern: fs.unlinkSync(...)
+      - pattern: fs.rm(...)
+      - pattern: fs.rmSync(...)
+      - pattern: fs.promises.writeFile(...)
+      - pattern: writeFile(...)
+      - pattern: writeFileSync(...)
+
+  - id: mcpaegis.js.network_call
+    message: Outbound network sink
+    languages: [javascript, typescript]
+    severity: WARNING
+    metadata:
+      sink_type: network_call
+    pattern-either:
+      - pattern: fetch(...)
+      - pattern: axios(...)
+      - pattern: axios.$METHOD(...)
+      - pattern: http.request(...)
+      - pattern: https.request(...)
+      - pattern: http.get(...)
+      - pattern: https.get(...)
+      - pattern: net.connect(...)
+      - pattern: net.createConnection(...)
+      - pattern: got(...)
+      - pattern: node_fetch(...)
+
+  - id: mcpaegis.js.db_query
+    message: Database query sink
+    languages: [javascript, typescript]
+    severity: WARNING
+    metadata:
+      sink_type: db_query
+    pattern-either:
+      - pattern: $DB.query(...)
+      - pattern: $DB.execute(...)
+      - pattern: $CLIENT.query(...)
+      - pattern: mongoose.connect(...)
+      - pattern: mongodb.MongoClient(...)
+      - pattern: knex(...)
+      - pattern: prisma.$METHOD(...)
+
+  - id: mcpaegis.js.dynamic_code_load
+    message: Dynamic code load sink
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      sink_type: dynamic_code_load
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: Function(...)
+      - pattern: new Function(...)
+      - pattern: vm.runInNewContext(...)
+      - pattern: vm.runInThisContext(...)
+      - pattern: require($X)
+
+  - id: mcpaegis.js.credential_read
+    message: Credential/secret read sink
+    languages: [javascript, typescript]
+    severity: WARNING
+    metadata:
+      sink_type: credential_read
+    pattern-either:
+      - pattern: process.env
+      - pattern: process.env[$KEY]
+      - pattern: process.env.$KEY
