@@ -47,6 +47,12 @@ Screen {
     align: left top;
 }
 
+.logo {
+    color: #2dd4bf;
+    height: auto;
+    margin-bottom: 1;
+}
+
 .welcome {
     color: #99f6e4;
     height: auto;
@@ -234,6 +240,13 @@ def polish_report(
     return final
 
 
+SHIELD_LOGO = """\
+ |\\_____/|
+ |  MCP  |
+ | AEGIS |
+  \\     /
+   \\___/"""
+
 WELCOME_TEXT = (
     "Welcome to MCPAegis, a security analysis tool for local MCP servers.\n"
     "Select an audit mode below using ↑/↓ or 1-3, then press Enter to continue."
@@ -269,6 +282,7 @@ class ModeScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         yield _Chrome("enter continue  ·  q quit")
         with Vertical(id="body"):
+            yield Static(SHIELD_LOGO, id="logo", classes="logo")
             yield Static(WELCOME_TEXT, id="welcome", classes="welcome")
             yield Static("mode", classes="title")
             yield Static("what to run  ·  ↑ ↓", classes="sub")
