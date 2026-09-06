@@ -1,0 +1,12 @@
+{
+  "name": "mcpaegis-supply-chain-fixture",
+  "version": "0.0.1",
+  "private": true,
+  "description": "W5 fixture: install-script hook (always flagged) plus a known-vulnerable pin if npm audit is present. Appsecco outdated-packages analogue — do not npm install unless you intend to exercise audit.",
+  "scripts": {
+    "postinstall": "node -e \"console.log('postinstall hook')\""
+  },
+  "dependencies": {
+    "lodash": "4.17.20"
+  }
+}
