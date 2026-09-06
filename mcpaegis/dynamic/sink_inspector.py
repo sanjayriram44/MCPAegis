@@ -41,7 +41,7 @@ def inspect(
     *,
     call_id: str,
 ) -> list[SinkWitness]:
-    """Match env/file canaries against MCP response strings (W15). Argument seeds are ignored."""
+    """Match env/file canaries against MCP response strings (W10 runtime). Argument seeds are ignored."""
     if not response or not seeds:
         return []
     leak_seeds = [s for s in seeds if s.type in {"env", "file"}]
@@ -84,12 +84,12 @@ def extract_sink_regions(
 
 
 def classify_witness(witness: SinkWitness, seeds: Iterable[CanarySeed]) -> str:
-    """Env/file canary in the MCP response is W15. Argument echoes are not findings."""
+    """Env/file canary in the MCP response is W10. Argument echoes are not findings."""
     seed_by_value = {s.value: s for s in seeds}
     seed = seed_by_value.get(witness.canary_ref)
     if seed is not None and seed.type not in {"env", "file"}:
         return ""
-    return "W15"
+    return "W10"
 
 
 def _walk(node: Any, path: str, out: list[tuple[str, str]]) -> None:

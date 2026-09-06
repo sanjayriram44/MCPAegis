@@ -40,7 +40,7 @@ def test_classify_env_file_canary_is_w15():
         confidence=1.0,
         matched_snippet=seed.value,
     )
-    assert classify_witness(witness, [seed]) == "W15"
+    assert classify_witness(witness, [seed]) == "W10"
 
 
 def test_inspect_ignores_argument_canaries():

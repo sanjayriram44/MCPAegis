@@ -1,4 +1,4 @@
-"""Stage 4 must confirm static W6/W7/W9 when the tree shows the sink."""
+"""Stage 4 must confirm static W5/W6/W7 when the tree shows the sink."""
 
 from __future__ import annotations
 
@@ -75,10 +75,10 @@ def test_shell_exec_confirms_w6_even_when_static_already_knew():
         declared_capabilities=[Capability.SHELL_EXEC],
         code_capabilities=[Capability.SHELL_EXEC],
         sink_refs=[],
-        known_flags=[Weakness.W6_COMMAND_INJECTION.value],
+        known_flags=[Weakness.W5_COMMAND_INJECTION.value],
     )
     result = verify(tree, profile)
-    assert Weakness.W6_COMMAND_INJECTION.value in result.confirmed_weakness_ids
+    assert Weakness.W5_COMMAND_INJECTION.value in result.confirmed_weakness_ids
     assert observed_capabilities(tree) == {Capability.SHELL_EXEC}
 
 
@@ -89,7 +89,7 @@ def test_missing_exec_does_not_confirm_w6():
         declared_capabilities=[Capability.SHELL_EXEC],
         code_capabilities=[Capability.SHELL_EXEC],
         sink_refs=[],
-        known_flags=[Weakness.W6_COMMAND_INJECTION.value],
+        known_flags=[Weakness.W5_COMMAND_INJECTION.value],
     )
     result = verify(tree, profile)
     assert result.confirmed_weakness_ids == []
@@ -117,7 +117,7 @@ def test_unexpected_shell_is_w12_when_static_did_not_flag_it():
         known_flags=[],
     )
     result = verify(tree, profile)
-    assert Weakness.W12_TOOL_EXEC_HIJACK.value in result.runtime_only_weakness_ids
+    assert Weakness.W9_TOOL_EXEC_HIJACK.value in result.runtime_only_weakness_ids
 
 
 def test_openat_confirms_w7():
@@ -150,7 +150,50 @@ def test_openat_confirms_w7():
         declared_capabilities=[Capability.FS_READ],
         code_capabilities=[Capability.FS_READ],
         sink_refs=[],
-        known_flags=[Weakness.W7_PATH_TRAVERSAL.value],
+        known_flags=[Weakness.W6_PATH_TRAVERSAL.value],
     )
     result = verify(tree, profile)
-    assert Weakness.W7_PATH_TRAVERSAL.value in result.confirmed_weakness_ids
+    assert Weakness.W6_PATH_TRAVERSAL.value in result.confirmed_weakness_ids
+
+
+def test_libc_open_on_raw_does_not_emit_w4_when_scoring_simplified():
+    libc = _event(
+        RuntimeEventKind.FILE_OPEN,
+        pid=2,
+        details={"path": "/lib/aarch64-linux-gnu/libc.so.6", "comm": "sh"},
+    )
+    child = ProcessNode(
+        pid=2,
+        ppid=1,
+        comm="sh",
+        argv="/bin/sh",
+        started_at=1.0,
+        ended_at=None,
+        file_events=[],
+        net_events=[],
+        children=[],
+    )
+    raw_child = ProcessNode(
+        pid=2,
+        ppid=1,
+        comm="sh",
+        argv="/bin/sh",
+        started_at=1.0,
+        ended_at=None,
+        file_events=[libc],
+        net_events=[],
+        children=[],
+    )
+    simplified = _tree("run_cmd", child)
+    raw = _tree("run_cmd", raw_child)
+    profile = ExpectedBehaviorProfile(
+        tool_name="run_cmd",
+        declared_capabilities=[Capability.SHELL_EXEC],
+        code_capabilities=[Capability.SHELL_EXEC],
+        sink_refs=[],
+        known_flags=[Weakness.W5_COMMAND_INJECTION.value],
+    )
+    result = verify(simplified, profile, raw=raw)
+    assert Weakness.W5_COMMAND_INJECTION.value in result.confirmed_weakness_ids
+    assert Weakness.W3_OVERPRIVILEGED.value not in result.runtime_only_weakness_ids
+    assert not any(m.capability == Capability.FS_READ for m in result.mismatches)

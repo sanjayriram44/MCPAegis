@@ -1,16 +1,16 @@
-"""Stage 4: declared-vs-observed comparison, W12 hijack shape, confirm static flags."""
+"""Stage 4: declared-vs-observed comparison, W9 hijack shape, confirm static flags."""
 
 from __future__ import annotations
 
-import json
 import warnings
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Iterable, Sequence
 
 from mcpaegis.core.models import (
     DeclaredVsObservedMismatch,
     ExpectedBehaviorProfile,
     PostExecutionVerification,
     ProcessNode,
+    StaticReport,
     ToolBehaviorTree,
 )
 from mcpaegis.core.session import AuditSession
@@ -24,11 +24,6 @@ PRIVILEGED_CAPS = {
 
 SENSITIVE_FILE_MARKERS = ("/etc/passwd", "/etc/shadow", "/etc/sudoers", ".ssh/", "id_rsa")
 
-DEFAULT_POST_SYSTEM = """You are verifying whether an MCP tool's runtime behavior matches
-its declared/code capabilities. Reply ALLOW if consistent, DENY if the process
-tree or DNS events show hijacking, unexpected shell, or data exfiltration.
-Start with ALLOW or DENY, then a short reason."""
-
 
 def verify(
     tree: ToolBehaviorTree,
@@ -36,11 +31,20 @@ def verify(
     *,
     call_id: str | None = None,
     simplified: ToolBehaviorTree | None = None,
+    raw: ToolBehaviorTree | None = None,
     session: AuditSession | None = None,
     task_context: str | None = None,
     schema: dict[str, Any] | None = None,
+    execution_result: Any = None,
+    static_report: StaticReport | None = None,
 ) -> PostExecutionVerification:
-    """Compare observed capabilities to the expected profile; optional LLM pass."""
+    """Compare observed capabilities on the (already filtered) behavior tree.
+
+    ``simplified`` / ``raw`` are ignored aliases from the old two-tree API.
+    When ``session.llm`` is enabled, the LLM emits runtime findings. Code
+    verify is the fallback if the key is missing or the model fails.
+    """
+    _ = raw, task_context
     if profile is None:
         warnings.warn(
             "no static profile found — running without declared-vs-observed verification",
@@ -55,7 +59,8 @@ def verify(
             known_flags=[],
         )
 
-    observed = observed_capabilities(tree)
+    scored = simplified or tree
+    observed = observed_capabilities(scored)
     declared = set(profile.declared_capabilities)
     code = set(profile.code_capabilities)
     known = set(profile.known_flags)
@@ -99,7 +104,7 @@ def verify(
     confirmed = _uniq(confirmed)
     runtime_only = _uniq(runtime_only)
 
-    code_reason = _raw_tree_policy(tree)
+    code_reason = _raw_tree_policy(scored)
     decision = "allow"
     policy_type: str = "code"
     if confirmed:
@@ -112,25 +117,10 @@ def verify(
     if code_reason:
         decision = "deny"
         reason = code_reason
-        if Weakness.W12_TOOL_EXEC_HIJACK.value not in runtime_only and Weakness.W12_TOOL_EXEC_HIJACK.value not in confirmed:
-            runtime_only.append(Weakness.W12_TOOL_EXEC_HIJACK.value)
+        if Weakness.W9_TOOL_EXEC_HIJACK.value not in runtime_only and Weakness.W9_TOOL_EXEC_HIJACK.value not in confirmed:
+            runtime_only.append(Weakness.W9_TOOL_EXEC_HIJACK.value)
 
-    llm = _text_policy(
-        simplified or tree,
-        profile,
-        session=session,
-        task_context=task_context,
-        schema=schema,
-    )
-    if llm is not None and decision == "allow":
-        policy_type = "text"
-        llm_decision, llm_reason = llm
-        decision = llm_decision
-        reason = llm_reason
-        if decision == "deny" and Weakness.W12_TOOL_EXEC_HIJACK.value not in runtime_only:
-            runtime_only.append(Weakness.W12_TOOL_EXEC_HIJACK.value)
-
-    return PostExecutionVerification(
+    result = PostExecutionVerification(
         call_id=call_id or tree.call_id,
         tool_name=tree.tool_name,
         decision=decision,  # type: ignore[arg-type]
@@ -139,6 +129,17 @@ def verify(
         confirmed_weakness_ids=confirmed,
         runtime_only_weakness_ids=runtime_only,
         reason=reason,
+    )
+    from mcpaegis.dynamic.runtime_judge import judge_verification
+
+    return judge_verification(
+        result,
+        scored,
+        profile,
+        session=session,
+        schema=schema,
+        execution_result=execution_result,
+        static_report=static_report,
     )
 
 
@@ -152,21 +153,21 @@ def _classify_observed_cap(
     """Map an observed capability to a confirmed static flag or a runtime-only id.
 
     Confirmation must fire when the tree *matches* the static profile (the
-    planted W6/W7/W9 case). Hijack (W12) is only for privileged behavior that
+    planted W5/W6/W7 case). Hijack (W9) is only for privileged behavior that
     static never attributed to the tool.
     """
-    if cap == Capability.SHELL_EXEC and Weakness.W6_COMMAND_INJECTION.value in known:
-        return Weakness.W6_COMMAND_INJECTION.value, "confirmed"
-    if cap in {Capability.FS_READ, Capability.FS_WRITE} and Weakness.W7_PATH_TRAVERSAL.value in known:
-        return Weakness.W7_PATH_TRAVERSAL.value, "confirmed"
-    if cap == Capability.NET_OUTBOUND and Weakness.W9_SSRF.value in known:
-        return Weakness.W9_SSRF.value, "confirmed"
+    if cap == Capability.SHELL_EXEC and Weakness.W5_COMMAND_INJECTION.value in known:
+        return Weakness.W5_COMMAND_INJECTION.value, "confirmed"
+    if cap in {Capability.FS_READ, Capability.FS_WRITE} and Weakness.W6_PATH_TRAVERSAL.value in known:
+        return Weakness.W6_PATH_TRAVERSAL.value, "confirmed"
+    if cap == Capability.NET_OUTBOUND and Weakness.W7_SSRF.value in known:
+        return Weakness.W7_SSRF.value, "confirmed"
     if not in_code and not in_declared and cap in PRIVILEGED_CAPS:
-        return Weakness.W12_TOOL_EXEC_HIJACK.value, "runtime_only"
-    if not in_code and Weakness.W4_OVERPRIVILEGED.value in known:
-        return Weakness.W4_OVERPRIVILEGED.value, "confirmed"
+        return Weakness.W9_TOOL_EXEC_HIJACK.value, "runtime_only"
+    if not in_code and Weakness.W3_OVERPRIVILEGED.value in known:
+        return Weakness.W3_OVERPRIVILEGED.value, "confirmed"
     if not in_code:
-        return Weakness.W4_OVERPRIVILEGED.value, "runtime_only"
+        return Weakness.W3_OVERPRIVILEGED.value, "runtime_only"
     return None, ""
 
 
@@ -238,57 +239,5 @@ def _uniq(items: list[str]) -> list[str]:
         if item not in seen:
             seen.append(item)
     return seen
-
-
-def _text_policy(
-    tree: ToolBehaviorTree,
-    profile: ExpectedBehaviorProfile,
-    *,
-    session: AuditSession | None,
-    task_context: str | None,
-    schema: dict[str, Any] | None,
-) -> Optional[tuple[str, str]]:
-    if session is None or not session.llm.enabled:
-        return None
-    try:
-        from mcpaegis.llm import prompts as prompt_mod
-    except Exception:
-        prompt_mod = None
-    system = DEFAULT_POST_SYSTEM
-    user_tmpl = (
-        "Task: {task}\nTool: {tool}\nSchema: {schema}\nArgs: {args}\n"
-        "Declared caps: {declared}\nCode caps: {code}\n"
-        "Process tree: {tree}\nDNS: {dns}\nDecide ALLOW or DENY."
-    )
-    if prompt_mod is not None:
-        system = getattr(prompt_mod, "POST_EXECUTION_SYSTEM", None) or getattr(
-            prompt_mod, "post_execution_system", system
-        )
-        user_tmpl = getattr(prompt_mod, "POST_EXECUTION_USER", None) or getattr(
-            prompt_mod, "post_execution_user", user_tmpl
-        )
-    user = user_tmpl.format(
-        task=task_context or "N/A",
-        tool=tree.tool_name,
-        schema=json.dumps(schema or {}, default=str)[:4000],
-        args=json.dumps(tree.arguments, default=str)[:4000],
-        declared=[c.value for c in profile.declared_capabilities],
-        code=[c.value for c in profile.code_capabilities],
-        tree=json.dumps(tree.model_dump(mode="json"), default=str)[:8000],
-        dns=json.dumps([e.model_dump(mode="json") for e in tree.dns_branch], default=str)[:4000],
-    )
-    try:
-        from mcpaegis.dynamic.pre_execution_auditor import _complete
-    except Exception:
-        return None
-    text = _complete(session, system, user)
-    if text is None:
-        return None
-    upper = text.upper()
-    decision = "deny" if "DENY" in upper.splitlines()[0] or upper.strip().startswith("DENY") else "allow"
-    if "DENY" in upper and "ALLOW" not in upper.splitlines()[0]:
-        if upper.strip().startswith("DENY") or (upper.splitlines() and "DENY" in upper.splitlines()[0]):
-            decision = "deny"
-    return decision, text.strip()[:500]
 
 

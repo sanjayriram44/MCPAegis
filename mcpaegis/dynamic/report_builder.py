@@ -20,12 +20,12 @@ from mcpaegis.core.taxonomy import Weakness
 from mcpaegis.dynamic.sink_inspector import classify_witness
 
 SEVERITY_BY_WEAKNESS: dict[str, str] = {
-    Weakness.W4_OVERPRIVILEGED.value: "HIGH",
-    Weakness.W6_COMMAND_INJECTION.value: "HIGH",
-    Weakness.W7_PATH_TRAVERSAL.value: "HIGH",
-    Weakness.W9_SSRF.value: "HIGH",
-    Weakness.W12_TOOL_EXEC_HIJACK.value: "CRITICAL",
-    Weakness.W15_RUNTIME_CRED_LEAKAGE.value: "CRITICAL",
+    Weakness.W3_OVERPRIVILEGED.value: "HIGH",
+    Weakness.W5_COMMAND_INJECTION.value: "HIGH",
+    Weakness.W6_PATH_TRAVERSAL.value: "HIGH",
+    Weakness.W7_SSRF.value: "HIGH",
+    Weakness.W9_TOOL_EXEC_HIJACK.value: "CRITICAL",
+    Weakness.W10_CREDENTIAL_EXPOSURE.value: "CRITICAL",
 }
 
 
@@ -84,6 +84,7 @@ def derive_findings(
 
     for ver in verifications:
         for wid in ver.confirmed_weakness_ids:
+            why = _judge_reason(ver, wid)
             findings.append(
                 RuntimeFinding(
                     call_id=ver.call_id,
@@ -91,11 +92,18 @@ def derive_findings(
                     weakness_id=wid,
                     severity=SEVERITY_BY_WEAKNESS.get(wid, "MEDIUM"),
                     status="confirmed",
-                    evidence_refs={"behavior_tree": ver.call_id, "verification": ver.call_id},
-                    description=f"static flag {wid} confirmed at runtime for {ver.tool_name}: {ver.reason}",
+                    evidence_refs={
+                        "behavior_tree": ver.call_id,
+                        "verification": ver.call_id,
+                        "judge_reason": why,
+                    },
+                    description=(
+                        f"static flag {wid} confirmed at runtime for {ver.tool_name}: {why or ver.reason}"
+                    ),
                 )
             )
         for wid in ver.runtime_only_weakness_ids:
+            why = _judge_reason(ver, wid)
             findings.append(
                 RuntimeFinding(
                     call_id=ver.call_id,
@@ -103,8 +111,12 @@ def derive_findings(
                     weakness_id=wid,
                     severity=SEVERITY_BY_WEAKNESS.get(wid, "HIGH"),
                     status="runtime_only",
-                    evidence_refs={"behavior_tree": ver.call_id, "verification": ver.call_id},
-                    description=_runtime_only_description(wid, ver),
+                    evidence_refs={
+                        "behavior_tree": ver.call_id,
+                        "verification": ver.call_id,
+                        "judge_reason": why,
+                    },
+                    description=_runtime_only_description(wid, ver, why),
                 )
             )
 
@@ -252,6 +264,17 @@ def _write_markdown(report: DynamicReport, path: Path) -> None:
             f"- **{finding.weakness_id}** ({finding.severity}, {finding.status}) "
             f"`{finding.tool_name}`: {finding.description}"
         )
+    if report.post_execution_verifications:
+        lines.extend(["", "## Judge classifications", ""])
+        for ver in report.post_execution_verifications:
+            lines.append(f"### `{ver.tool_name}` (`{ver.call_id}`)")
+            if not ver.judge_classifications:
+                lines.append("- _No LLM classifications._")
+                continue
+            for item in ver.judge_classifications:
+                why = item.reason or "(no reason)"
+                lines.append(f"- `{item.weakness_id}` **{item.verdict}**: {why}")
+            lines.append("")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -265,13 +288,23 @@ def _sarif_level(severity: str | None) -> str:
     return mapping.get((severity or "").upper(), "warning")
 
 
-def _runtime_only_description(wid: str, ver: PostExecutionVerification) -> str:
-    if wid == Weakness.W12_TOOL_EXEC_HIJACK.value:
+def _runtime_only_description(
+    wid: str, ver: PostExecutionVerification, why: str = ""
+) -> str:
+    detail = why or ver.reason
+    if wid == Weakness.W9_TOOL_EXEC_HIJACK.value:
         return (
             f"hijack-shaped runtime behavior for {ver.tool_name}: observed privileged "
-            f"capability not in declared/code profile ({ver.reason})"
+            f"capability not in declared/code profile ({detail})"
         )
-    return f"runtime-only {wid} for {ver.tool_name}: {ver.reason}"
+    return f"runtime-only {wid} for {ver.tool_name}: {detail}"
+
+
+def _judge_reason(ver: PostExecutionVerification, wid: str) -> str:
+    for item in ver.judge_classifications:
+        if item.weakness_id == wid and item.reason:
+            return item.reason
+    return ""
 
 
 def _witness_description(wid: str, witness: SinkWitness) -> str:

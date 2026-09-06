@@ -144,8 +144,6 @@ def run(
                 inv.tool_name,
                 inv.arguments,
                 call_id=call_id,
-                schema=inv.schema,
-                session=session,
             )
             pre_audits.append(pre)
             if pre.decision == "deny":
@@ -158,15 +156,16 @@ def run(
                 call_id=call_id,
                 seed_pids=seed_pids,
             )
-            trees.append(tree.raw)
+            trees.append(tree)
             verifications.append(
                 verify_post(
-                    tree.raw,
+                    tree,
                     profile_by_tool.get(inv.tool_name),
                     call_id=call_id,
-                    simplified=tree.simplified,
                     session=session,
                     schema=inv.schema,
+                    execution_result=response,
+                    static_report=static,
                 )
             )
             witnesses_all.extend(inspect_sinks(response, seeds, call_id=call_id))

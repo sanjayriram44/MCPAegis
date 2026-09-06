@@ -1,9 +1,8 @@
-"""Stage 3: assemble ToolBehaviorTree from RuntimeEvent stream with noise filter."""
+"""Assemble one noise-filtered ToolBehaviorTree from a RuntimeEvent stream."""
 
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
@@ -26,12 +25,6 @@ DEFAULT_NOISE_PATH_PARTS = (
 LOOPBACK_ADDRS = {"127.0.0.1", "::1", "0.0.0.0", "localhost"}
 
 
-@dataclass
-class BehaviorTrees:
-    raw: ToolBehaviorTree
-    simplified: ToolBehaviorTree
-
-
 def assemble(
     events: Sequence[RuntimeEvent],
     *,
@@ -41,29 +34,19 @@ def assemble(
     timestamp: float | None = None,
     seed_pids: Optional[Iterable[int]] = None,
     noise_path_parts: Sequence[str] | None = None,
-) -> BehaviorTrees:
-    """Build pid/ppid process trees; keep unfiltered raw plus a simplified copy."""
+) -> ToolBehaviorTree:
+    """Filter loader/loopback noise, then build a single pid/ppid tree."""
     ts = timestamp if timestamp is not None else time.time()
-    raw_nodes, dns = _build_nodes(events, seed_pids=list(seed_pids or []))
-    raw = ToolBehaviorTree(
+    filtered = [evt for evt in events if not is_noise(evt, noise_path_parts=noise_path_parts)]
+    nodes, dns = _build_nodes(filtered, seed_pids=list(seed_pids or []))
+    return ToolBehaviorTree(
         call_id=call_id,
         tool_name=tool_name,
         arguments=dict(arguments),
         timestamp=ts,
-        process_branch=raw_nodes,
+        process_branch=nodes,
         dns_branch=dns,
     )
-    filtered = [evt for evt in events if not is_noise(evt, noise_path_parts=noise_path_parts)]
-    simple_nodes, simple_dns = _build_nodes(filtered, seed_pids=list(seed_pids or []))
-    simplified = ToolBehaviorTree(
-        call_id=call_id,
-        tool_name=tool_name,
-        arguments=dict(arguments),
-        timestamp=ts,
-        process_branch=simple_nodes,
-        dns_branch=simple_dns,
-    )
-    return BehaviorTrees(raw=raw, simplified=simplified)
 
 
 def is_noise(
