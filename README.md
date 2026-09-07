@@ -25,12 +25,7 @@ Package and command is mcpaegis. It requires Python 3.11 or newer.
 
 ## Demo
 
-GitHub plays the file inline after you drop it in the browser. Cursor and VS Code will not. Do not commit the mp4 into this repo.
-
-1. Push this README.
-2. On github.com open this file and click the pencil (Edit).
-3. Drop the video onto the blank line under this sentence. GitHub uploads it and inserts a player URL. Keep that URL on its own line.
-
+https://drive.google.com/file/d/1fySmDTx81ju_HWx_aYx7hUbinApp6C3z/view?usp=drive_link
 ---
 
 ## How I got here
