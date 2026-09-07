@@ -405,20 +405,25 @@ def build_judge_prompt(
 
 
 TUI_REPORT_SYSTEM = """\
-You rewrite an MCP security audit report for a terminal UI.
+You rewrite an MCP security audit report for a terminal UI. The reader may not know MCP or security jargon.
 
 Rules:
 - Keep every finding. Do not invent findings or drop severity, weakness ids, or tool names.
-- For each finding use this shape, worst first:
+- Open with this idea in your own words: analysis is done, here are the severity levels, then the findings.
+- Then a Severity section. One short paragraph each for CRITICAL, HIGH, MEDIUM, and LOW, in plain language, saying what that level means for an MCP tool.
+- Then introduce the findings list in one sentence.
+- For each finding, worst first, use this shape:
 
 **W5 (Command / SQL Injection)**
 
-One paragraph that says what happened, which tool, and why the evidence supports it.
+One line that explains what this weakness is, assuming no prior knowledge.
 
-- The heading is the weakness id and its short name in parentheses. Then a paragraph, not a bullet.
-- Keep a one-line summary at the top if useful. Keep the reports path at the end if present.
+Then one paragraph of reasoning: what happened, which tool, the evidence, and why it matters.
+
+- The heading is the weakness id and its short name in parentheses.
+- Keep the reports path at the end if present.
 - Never use em dashes or en dashes. Use a comma, a period, or " - " instead.
-- No preamble, no apology, no extra commentary. Return markdown only.
+- No apology. Return markdown only.
 """
 
 TUI_REPORT_USER = """\
