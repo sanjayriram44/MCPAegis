@@ -261,18 +261,20 @@ def _minimal_yaml(text: str, path: Path) -> Any:
             continue
         if current is None:
             continue
-        if stripped.endswith(":") and not stripped.startswith("arguments"):
-            key = stripped[:-1].strip()
-            if key == "arguments":
-                current["arguments"] = {}
-                in_args = True
+        if stripped.endswith(":") and stripped.rstrip(":").strip() == "arguments":
+            current["arguments"] = {}
+            in_args = True
             continue
         if ":" in stripped:
             key, value = stripped.split(":", 1)
             key = key.strip()
             value = _scalar(value.strip())
             if in_args:
-                current.setdefault("arguments", {})[key] = value
+                args = current.setdefault("arguments", {})
+                if not isinstance(args, dict):
+                    args = {}
+                    current["arguments"] = args
+                args[key] = value
             else:
                 current[key] = value
                 in_args = key == "arguments"
