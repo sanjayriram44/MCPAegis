@@ -142,21 +142,21 @@ Each pipeline is broken into stages, usually by which weaknesses they target. Th
 
    How urgent a finding is, not how sure I am. Surety is the merge tier (static_only, runtime_confirmed, runtime_only).
 
-9. CRITICAL
+   - CRITICAL
 
-   The MCP tool can take over the host or steal high-value secrets with little extra work.
+     The MCP tool can take over the host or steal high-value secrets with little extra work.
 
-10. HIGH
+   - HIGH
 
-    A real exploit path is present (injection, traversal, SSRF, leaked credentials) and should be fixed before this server is trusted.
+     A real exploit path is present (injection, traversal, SSRF, leaked credentials) and should be fixed before this server is trusted.
 
-11. MEDIUM
+   - MEDIUM
 
-    A meaningful weakness exists but needs a specific setup or extra step to abuse.
+     A meaningful weakness exists but needs a specific setup or extra step to abuse.
 
-12. LOW
+   - LOW
 
-    A hygiene or over-declaration issue that is worth tracking but is not an immediate exploit.
+     A hygiene or over-declaration issue that is worth tracking but is not an immediate exploit.
 
 ---
 
@@ -205,15 +205,16 @@ Static never calls the tools. It answers what tools exist, what the listing clai
 The static pipeline is 4 steps. Discovery, then three parallel lanes (A/B/C), then joins, then the report. Order lives in mcpaegis/static/pipeline.py.
 
 ```mermaid
+%%{init: {"flowchart": {"htmlLabels": true, "wrappingWidth": 140, "useMaxWidth": true, "padding": 12}}}%%
 flowchart TD
-  S0["1. Discovery. language, entrypoint, tools/list"]
-  S0 --> S1A["2a. Lane A. tool listing W1 + declared caps, code W2"]
-  S0 --> S1B["2b. Lane B. Semgrep sinks then named W5 W6 W7"]
-  S0 --> S1C["2c. Lane C. inventory W4 SCA + static W10 secrets"]
-  S1A --> S2["3. Joins. W3 declared vs code, W8 access-control names"]
+  S0["1. Discovery"]
+  S0 --> S1A["2a. Lane A<br/>W1 W2"]
+  S0 --> S1B["2b. Lane B<br/>W5 W6 W7"]
+  S0 --> S1C["2c. Lane C<br/>W4 W10"]
+  S1A --> S2["3. Joins<br/>W3 W8"]
   S1B --> S2
   S1C --> S2
-  S2 --> S3["4. Static report + expected behavior profile"]
+  S2 --> S3["4. Static report"]
 ```
 
 ### 1. Discovery
@@ -265,13 +266,14 @@ The dynamic pipeline is 7 steps (0 through 6). Launch and eBPF, plan calls and p
 On Apple Silicon, mcpaegis runtime and mcpaegis full start Lima automatically, run runtime in the guest, then merge locally. On Linux they run in-process. Darwin is the wrong kernel for BCC, and Docker Desktop's LinuxKit VM does not count.
 
 ```mermaid
+%%{init: {"flowchart": {"htmlLabels": true, "wrappingWidth": 140, "useMaxWidth": true, "padding": 12}}}%%
 flowchart TD
-  D0["0. Local process + nested cgroup + eBPF"]
-  D0 --> D1["1. Plan invocations + plant env/file canaries"]
-  D1 --> D2["2. Pre-exec code gate. allow or skip"]
-  D2 --> D3["3. tools/call + drain BPF + one filtered tree"]
-  D3 --> D4["4. Judge or code verifier vs static profile"]
-  D3 --> D5["5. Canary vs MCP response W10"]
+  D0["0. Process + eBPF"]
+  D0 --> D1["1. Plan + canaries"]
+  D1 --> D2["2. Pre-exec gate"]
+  D2 --> D3["3. Call + tree"]
+  D3 --> D4["4. Judge vs profile"]
+  D3 --> D5["5. Canary vs response"]
   D4 --> D6["6. Runtime report"]
   D5 --> D6
 ```
@@ -309,11 +311,15 @@ flowchart TD
 - With a key, the LLM emits runtime evidence for W3 / W5 / W6 / W7 / W9 / W10. Static-only IDs (W1, W2, W4, W8) are stripped even if the model names them. Without a key, the code verifier is the fallback.
 - Observed cap already in static known_flags becomes a confirm. Privileged cap not in declared or code becomes W9. Cap not seen on this one call is a mismatch, not a proof of absence.
 
-### 5 and 6. Canaries, report
+### 5. Canaries
 
-- Stage 5 walks string leaves of the JSON-RPC result against env and file seeds only.
+- Walks string leaves of the JSON-RPC result against env and file seeds only.
 - If the process reads the canary and never puts it in the MCP result, Stage 5 is silent (eBPF might still show a file read).
-- Stage 6 writes runtime-report.json / .sarif / .md. Confirmed W5/W6/W7/W3 are HIGH. W9 and canary W10 are CRITICAL.
+
+### 6. Runtime report
+
+- Writes runtime-report.json / .sarif / .md.
+- Confirmed W5/W6/W7/W3 are HIGH. W9 and canary W10 are CRITICAL.
 
 ---
 
