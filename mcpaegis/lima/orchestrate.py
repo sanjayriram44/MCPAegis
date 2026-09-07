@@ -23,8 +23,22 @@ from mcpaegis.lima.guest import (
     runtime_argv,
     venv_ready,
 )
-from mcpaegis.lima.paths import default_output_dir, require_under_home, resolve_test_script
-from mcpaegis.lima.vm import ensure_instance, ensure_lima_cli, find_limactl, run_streaming, shell
+from mcpaegis.lima.paths import (
+    default_output_dir,
+    is_under_home,
+    require_under_home,
+    resolve_test_script,
+    stage_file_under_home,
+    stage_under_home,
+)
+from mcpaegis.lima.vm import (
+    ensure_instance,
+    ensure_lima_cli,
+    find_limactl,
+    run_streaming,
+    shell,
+    stop_instance,
+)
 from mcpaegis.output.json_writer import load_report
 from mcpaegis.output.markdown_writer import render_markdown
 
@@ -56,6 +70,15 @@ def _log(lines: list[str], emit: LogFn | None, message: str) -> None:
         emit(message)
 
 
+@dataclass
+class PreparedPaths:
+    original: Path
+    runtime: Path
+    output: Path
+    script: Path | None
+    copied: bool = False
+
+
 def prepare_paths(
     server: Path | str,
     output: Path | str | None,
@@ -63,29 +86,55 @@ def prepare_paths(
     *,
     mode: Mode,
     home: Path | None = None,
-) -> tuple[Path, Path, Path | None]:
-    server_path = Path(server).expanduser().resolve()
-    if not server_path.exists():
-        raise FileNotFoundError(f"MCP server path does not exist: {server_path}")
+) -> PreparedPaths:
+    original = Path(server).expanduser().resolve()
+    if not original.exists():
+        raise FileNotFoundError(f"MCP server path does not exist: {original}")
     darwin_runtime = mode in {"runtime", "full"} and platform.system() == "Darwin"
+    runtime = original
+    copied = False
     if darwin_runtime:
-        server_path = require_under_home(server_path, home=home, what="MCP server path")
+        runtime = stage_under_home(original, home=home)
+        copied = runtime != original
         out = (
             Path(output).expanduser().resolve()
             if output
-            else default_output_dir(server_path, home=home)
+            else default_output_dir(original, home=home)
         )
+        if not is_under_home(out, home=home):
+            out = default_output_dir(original, home=home)
         out = require_under_home(out, home=home, what="output directory")
     else:
         out = Path(output).expanduser().resolve() if output else (Path.cwd() / "mcpaegis-out")
-    script = resolve_test_script(
-        server_path,
-        test_script,
-        home=home,
-        require_shared=darwin_runtime,
-    )
+    try:
+        script = resolve_test_script(
+            original,
+            test_script,
+            home=home,
+            require_shared=False,
+        )
+    except FileNotFoundError:
+        if not copied:
+            raise
+        script = resolve_test_script(
+            runtime,
+            test_script,
+            home=home,
+            require_shared=False,
+        )
+    if darwin_runtime and script is not None:
+        dest_dir = None
+        if copied:
+            dest_dir = runtime if runtime.is_dir() else runtime.parent
+        script = stage_file_under_home(script, dest_dir=dest_dir, home=home)
     out.mkdir(parents=True, exist_ok=True)
-    return server_path, out, script
+    return PreparedPaths(
+        original=original,
+        runtime=runtime,
+        output=out,
+        script=script,
+        copied=copied,
+    )
 
 
 def run_static_local(server_path: Path, session: AuditSession, log: LogFn | None = None) -> StaticReport:
@@ -241,27 +290,34 @@ def run_analysis(
         _log(lines, log, message)
 
     try:
-        server_path, out, script = prepare_paths(server, output, test_script, mode=mode)
+        prepared = prepare_paths(server, output, test_script, mode=mode)
     except (FileNotFoundError, PathNotSharedError) as exc:
         result = RunResult(mode=mode, server_path=Path(server), output_dir=Path("."), error=str(exc))
         result.log = [str(exc)]
         return result
 
+    original = prepared.original
+    runtime_path = prepared.runtime
+    out = prepared.output
+    script = prepared.script
     sess = session or AuditSession.from_cli(output=out, format="json", no_color=True)
     sess.output_dir = out
-    result = RunResult(mode=mode, server_path=server_path, output_dir=out)
+    result = RunResult(mode=mode, server_path=original, output_dir=out)
     llm_env = llm_env_from_config(sess.llm)
+    darwin_runtime = mode in {"runtime", "full"} and platform.system() == "Darwin"
 
     try:
+        if prepared.copied:
+            emit(f"copied MCP server to {runtime_path}")
         if mode in {"static", "full"}:
             emit("Running static analysis on this host…")
-            result.static_report = run_static_local(server_path, sess, log=emit)
+            result.static_report = run_static_local(original, sess, log=emit)
             emit("Static analysis finished.")
         if mode in {"runtime", "full"}:
             if platform.system() == "Darwin":
                 emit("Ensuring Lima Ubuntu guest for eBPF runtime…")
                 code = run_runtime_guest(
-                    server_path=server_path,
+                    server_path=runtime_path,
                     output_dir=out,
                     test_script=script,
                     timeout=timeout,
@@ -272,7 +328,7 @@ def run_analysis(
             elif platform.system() == "Linux":
                 emit("Linux host: running runtime locally…")
                 code = run_runtime_linux(
-                    server_path=server_path,
+                    server_path=runtime_path,
                     output_dir=out,
                     test_script=script,
                     timeout=timeout,
@@ -302,7 +358,7 @@ def run_analysis(
                 static_arg,
                 dynamic_arg,
                 session=sess,
-                server_path=server_path,
+                server_path=original,
                 static_report_ref=static_file,
                 dynamic_report_ref=runtime_file if dynamic_arg is not None else None,
                 write_output=True,
@@ -312,6 +368,13 @@ def run_analysis(
     except Exception as exc:  # noqa: BLE001 — surface any pipeline/Lima failure in the TUI
         result.error = str(exc)
         emit(f"error: {exc}")
+    finally:
+        if darwin_runtime:
+            try:
+                emit("Stopping Lima to free host resources…")
+                stop_instance(log=emit)
+            except Exception as stop_exc:  # noqa: BLE001
+                emit(f"warning: could not stop Lima ({stop_exc})")
     result.log = lines
     return result
 

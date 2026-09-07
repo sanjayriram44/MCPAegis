@@ -13,5 +13,5 @@ Work that is **not** in the TUI / Lima automation stream. Do not treat this file
 
 - **TUI + Mac VM automation** — bare `mcpaegis` launches a Textual UI; static on the Mac; runtime/full drives Lima Ubuntu ARM64. Tracked as the TUI Lima plan, not here.
 - **Intel Mac x86_64 guest** — current `lima.yaml` is `vz` + `aarch64` only. A native Ubuntu x86_64 image would be required; out of scope for Apple Silicon automation.
-- **Mounts outside `$HOME`** — Lima virtiofs only shares `~`. Server paths and `--output` outside the Mac home are refused. Extra `mounts:` entries are a later change.
+- **Extra Lima mounts** - virtiofs still only shares `~`. Servers outside home are copied to `~/mcpaegis-servers/` instead of adding `mounts:` (a recreate). Extra mounts remain out of scope.
 - **Runtime canary W10 positive fixture** — no planted fixture yet where an env/file canary appears in the MCP response.

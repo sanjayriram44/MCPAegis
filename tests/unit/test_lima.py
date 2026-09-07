@@ -11,7 +11,7 @@ from mcpaegis.lima.errors import PathNotSharedError
 from mcpaegis.core.session import LLMConfig
 from mcpaegis.lima.guest import llm_env_from_config, llm_env_from_os, redact_argv, runtime_argv
 from mcpaegis.lima.orchestrate import prepare_paths
-from mcpaegis.lima.paths import is_under_home, lima_yaml_path, require_under_home
+from mcpaegis.lima.paths import is_under_home, lima_yaml_path, require_under_home, stage_under_home
 
 
 def test_parse_limactl_list_json_array():
@@ -92,14 +92,42 @@ def test_require_under_home_rejects_outside(tmp_path: Path):
         require_under_home(outside, home=home, what="MCP server path")
 
 
-def test_prepare_paths_runtime_darwin_refuses_outside(tmp_path: Path, monkeypatch):
+def test_stage_under_home_copies_outside_and_skips_venv(tmp_path: Path):
+    home = tmp_path / "Users" / "me"
+    home.mkdir(parents=True)
+    src = tmp_path / "opt" / "myserver"
+    src.mkdir(parents=True)
+    (src / "server.py").write_text("print(1)\n", encoding="utf-8")
+    (src / ".venv").mkdir()
+    (src / ".venv" / "x").write_text("skip\n", encoding="utf-8")
+    (src / "node_modules").mkdir()
+    dest = stage_under_home(src, home=home)
+    assert dest == (home / "mcpaegis-servers" / "myserver").resolve()
+    assert (dest / "server.py").is_file()
+    assert not (dest / ".venv").exists()
+    assert not (dest / "node_modules").exists()
+
+
+def test_stage_under_home_keeps_path_already_under_home(tmp_path: Path):
+    home = tmp_path / "Users" / "me"
+    server = home / "src" / "myserver"
+    server.mkdir(parents=True)
+    assert stage_under_home(server, home=home) == server.resolve()
+
+
+def test_prepare_paths_runtime_darwin_copies_outside(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("mcpaegis.lima.orchestrate.platform.system", lambda: "Darwin")
     home = tmp_path / "Users" / "me"
     home.mkdir(parents=True)
     outside = tmp_path / "elsewhere" / "server"
     outside.mkdir(parents=True)
-    with pytest.raises(PathNotSharedError):
-        prepare_paths(outside, None, None, mode="runtime", home=home)
+    (outside / "server.py").write_text("print(1)\n", encoding="utf-8")
+    prepared = prepare_paths(outside, None, None, mode="runtime", home=home)
+    assert prepared.copied
+    assert prepared.original == outside.resolve()
+    assert prepared.runtime == (home / "mcpaegis-servers" / "server").resolve()
+    assert prepared.output == (home / "mcpaegis-out" / "server").resolve()
+    assert (prepared.runtime / "server.py").is_file()
 
 
 def test_prepare_paths_runtime_darwin_accepts_home(tmp_path: Path, monkeypatch):
@@ -110,13 +138,27 @@ def test_prepare_paths_runtime_darwin_accepts_home(tmp_path: Path, monkeypatch):
     out = home / "mcpaegis-out" / "myserver"
     script = home / "src" / "myserver" / "runtime.yaml"
     script.write_text("- tool_name: echo\n  arguments: {}\n", encoding="utf-8")
-    got_server, got_out, got_script = prepare_paths(
-        server, out, script, mode="full", home=home
-    )
-    assert got_server == server.resolve()
-    assert got_out == out.resolve()
-    assert got_script == script.resolve()
-    assert got_out.is_dir()
+    prepared = prepare_paths(server, out, script, mode="full", home=home)
+    assert not prepared.copied
+    assert prepared.original == server.resolve()
+    assert prepared.runtime == server.resolve()
+    assert prepared.output == out.resolve()
+    assert prepared.script == script.resolve()
+    assert prepared.output.is_dir()
+
+
+def test_prepare_paths_copies_outside_script(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("mcpaegis.lima.orchestrate.platform.system", lambda: "Darwin")
+    home = tmp_path / "Users" / "me"
+    server = home / "src" / "myserver"
+    server.mkdir(parents=True)
+    script = tmp_path / "scratch" / "runtime.yaml"
+    script.parent.mkdir(parents=True)
+    script.write_text("- tool_name: echo\n  arguments: {}\n", encoding="utf-8")
+    prepared = prepare_paths(server, None, script, mode="runtime", home=home)
+    assert prepared.script == (home / "mcpaegis-servers" / "_scripts" / "runtime.yaml").resolve()
+    assert prepared.script.is_file()
+    assert not prepared.copied
 
 
 def test_runtime_argv_forwards_llm_env():
@@ -168,6 +210,28 @@ def test_llm_env_from_config_forwards_session_model():
         "MCPAEGIS_LLM_BASE_URL": "https://openrouter.ai/api/v1",
         "MCPAEGIS_LLM_MODEL": "qwen/qwen3.8-27b",
     }
+
+
+def test_stop_instance_uses_yes_flag(monkeypatch):
+    from mcpaegis.lima import vm as vm_mod
+    from mcpaegis.lima.doctor import LimaInstance
+
+    captured: list[list[str]] = []
+
+    monkeypatch.setattr(
+        vm_mod,
+        "list_instances",
+        lambda _b: [LimaInstance(name="mcpaegis", status="Running", vm_type="vz", arch="aarch64")],
+    )
+
+    def fake_stream(argv, **_kwargs):
+        captured.append(list(argv))
+        return 0
+
+    monkeypatch.setattr(vm_mod, "run_streaming", fake_stream)
+    vm_mod.stop_instance(limactl="/opt/homebrew/bin/limactl")
+    assert captured
+    assert captured[0][:4] == ["/opt/homebrew/bin/limactl", "stop", "-y", "mcpaegis"]
 
 
 def test_ensure_instance_uses_yes_flag(monkeypatch, tmp_path: Path):
@@ -263,8 +327,8 @@ def test_prepare_paths_relative_script_darwin(tmp_path: Path, monkeypatch):
     server.mkdir(parents=True)
     (server / "runtime.yaml").write_text("- tool_name: echo\n  arguments: {}\n", encoding="utf-8")
     out = home / "mcpaegis-out" / "myserver"
-    _, _, script = prepare_paths(server, out, "runtime.yaml", mode="full", home=home)
-    assert script == (server / "runtime.yaml").resolve()
+    prepared = prepare_paths(server, out, "runtime.yaml", mode="full", home=home)
+    assert prepared.script == (server / "runtime.yaml").resolve()
 
 
 def test_lima_yaml_is_packaged():

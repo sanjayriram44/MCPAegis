@@ -1,6 +1,6 @@
 # Lima Ubuntu ARM64 runbook (`mcpaegis runtime`)
 
-On an **Apple Silicon Mac**, clone the repo, `pip install -e ".[static]"`, then either:
+On an **Apple Silicon Mac**, install once (`pip install -e ".[static]"`), then run `mcpaegis` from **any cwd**:
 
 ```bash
 mcpaegis          # TUI
@@ -8,7 +8,7 @@ mcpaegis          # TUI
 mcpaegis full ./tests/fixtures/command_injection --output ~/mcpaegis-out/ci
 ```
 
-Both install Lima (Homebrew) if needed, start the Ubuntu ARM64 guest, bootstrap the guest venv, and run runtime with `sudo -E`. Static stays on macOS so Semgrep is not lost under `sudo` `secure_path`. The rest of this file is the fallback if you want to drive Lima yourself.
+Both install Lima (Homebrew) if needed, start the shared Ubuntu ARM64 guest named `mcpaegis`, bootstrap the guest venv, and run runtime with `sudo -n -E`. After each Runtime/Full run the VM is **stopped** (`limactl stop -y mcpaegis`) so host RAM/CPU are freed; the disk and venv stay for the next start. Static stays on macOS so Semgrep is not lost under `sudo` `secure_path`. Any MCP server path is accepted: trees outside `~` are copied to `~/mcpaegis-servers/<name>/` (Lima only mounts home). The rest of this file is the fallback if you want to drive Lima yourself.
 
 Do **not** `limactl shell` just to run analysis — the CLI/TUI do that.
 
@@ -19,8 +19,9 @@ Config: [`lima.yaml`](../lima.yaml) at the repo root (also packaged as `mcpaegis
 ## Requirements
 
 - Apple Silicon Mac, macOS ≥13.5
-- Homebrew
-- This repository on the Mac (virtiofs mounts `~` writable, so the same path exists in the guest)
+- Homebrew (only if `limactl` is missing; first run may also prompt for Virtualization.framework)
+- A local MCP server path (any location). Lima virtiofs mounts `~` writable. Servers already under home are used in place. Servers outside home are copied to `~/mcpaegis-servers/<name>/`. Static analysis still uses the original path.
+- Guest sudo is passwordless `sudo -n -E` inside Ubuntu for eBPF. The Mac user does not type sudo for host Python.
 
 Intel Macs cannot run an ARM guest with `vz`. Use a native `x86_64` Ubuntu image instead (not this file).
 
@@ -131,7 +132,7 @@ Reports land in `./out` on the shared mount (visible on the Mac).
 
 ## 6. Stop and delete
 
-On the **Mac**:
+The TUI/CLI already stop the VM after each Darwin Runtime/Full run (`limactl stop -y mcpaegis`) and never delete it. Manual equivalents on the **Mac**:
 
 ```bash
 limactl stop mcpaegis      # keep disk; start later with limactl start mcpaegis
@@ -139,7 +140,7 @@ limactl start mcpaegis
 limactl delete -f mcpaegis # destroy this instance’s disk
 ```
 
-`limactl delete` does not uninstall Homebrew Lima.
+`limactl delete` does not uninstall Homebrew Lima. Do not delete between ordinary runs; the next start would re-download Ubuntu.
 
 ## Failure modes
 
