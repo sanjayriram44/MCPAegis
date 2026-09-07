@@ -6,18 +6,30 @@ The resulting vulnerabilities I find are grouped into distinct weakness categori
 
 Package and command is mcpaegis. It requires Python 3.11 or newer.
 
-1. [How I got here](#how-i-got-here)
-2. [What you need](#what-you-need)
-3. [Two modes of operation](#two-modes-of-operation)
-4. [With or without a model](#with-or-without-a-model)
-5. [Key terms and concepts](#key-terms-and-concepts)
-6. [Weakness catalog](#weakness-catalog-w1-w10)
-7. [Capability catalog](#capability-catalog-c1-c12)
-8. [Static analysis](#static-analysis)
-9. [Dynamic analysis](#dynamic-analysis)
-10. [Merge and display](#merge-and-display)
-11. [Setup](#setup)
-12. [Tests and fixtures](#tests-fixtures-ground-truth-vs-observed)
+1. [Demo](#demo)
+2. [How I got here](#how-i-got-here)
+3. [What you need](#what-you-need)
+4. [Two modes of operation](#two-modes-of-operation)
+5. [With or without a model](#with-or-without-a-model)
+6. [Key terms and concepts](#key-terms-and-concepts)
+7. [Weakness catalog](#weakness-catalog-w1-w10)
+8. [Capability catalog](#capability-catalog-c1-c12)
+9. [Static analysis](#static-analysis)
+10. [Dynamic analysis](#dynamic-analysis)
+11. [Merge and display](#merge-and-display)
+12. [Required on Mac](#required-on-mac)
+13. [Setup](#setup)
+14. [Tests and fixtures](#tests-fixtures-ground-truth-vs-observed)
+
+---
+
+## Demo
+
+GitHub plays the file inline after you drop it in the browser. Cursor and VS Code will not. Do not commit the mp4 into this repo.
+
+1. Push this README.
+2. On github.com open this file and click the pencil (Edit).
+3. Drop the video onto the blank line under this sentence. GitHub uploads it and inserts a player URL. Keep that URL on its own line.
 
 ---
 
@@ -336,6 +348,56 @@ mcpaegis full (and the TUI Full path) unions static and runtime into one finding
 On macOS, static stays on the Mac so Semgrep is not lost under guest sudo secure_path. Runtime runs in Lima. Merge happens locally. After each Runtime / Full run the VM is stopped (disk and guest venv kept) so host RAM/CPU are freed.
 
 When you use the TUI with a model, MCPAegis then sends the merged markdown to the LLM and streams a rewritten report into the terminal, starting with a severity legend in plain language, then every finding kept (id, tool, evidence). Without a model, you get the structured markdown / JSON / SARIF writers as-is. Re-render later with mcpaegis report.
+
+---
+
+## Required on Mac
+
+This cut targets Apple Silicon. Read this before Setup.
+
+### Machine
+
+- Apple Silicon Mac (M1, M2, M3, or M4). Intel Macs are out of scope.
+- macOS 13.5 or newer.
+- Git, to clone the repo.
+- Python 3.11 or newer. Prefer Homebrew python3.11. System python3 is often too old.
+- A local MCP server tree you can read. MCPAegis does not fetch remote servers. Repo fixtures count, for example tests/fixtures/command_injection.
+- A terminal TTY if you want the wizard (bare mcpaegis).
+
+### Runtime and Full
+
+Static-only does not need these. Runtime and Full do.
+
+- Homebrew. MCPAegis uses it only if limactl is missing. The first Runtime or Full run may brew-install Lima.
+- Virtualization.framework allowed. macOS may prompt once.
+- Disk and time for the first Ubuntu 24.04 ARM64 Lima image (minutes). Later runs reuse the VM disk.
+
+You do not type a Mac sudo password. eBPF uses passwordless sudo -n -E inside the Ubuntu guest.
+
+### Optional
+
+- OpenRouter if you want LLM stages (Lane A W1, Stage 4 judge, TUI rewrite). Without a key, analysis still runs with regex and code fallbacks. Put a .env in the repo root or your current directory.
+
+  ```
+  MCPAEGIS_LLM_API_KEY=sk-or-...
+  MCPAEGIS_LLM_BASE_URL=https://openrouter.ai/api/v1
+  MCPAEGIS_LLM_MODEL=<an OpenRouter model id>
+  ```
+
+- pip install -e ".[static]" so Semgrep is in the venv (taint, W5 through W7). Missing Semgrep skips that slice. The rest of static still finishes.
+- Supply-chain CLIs on PATH for W4. pip-audit, npm audit, osv-scanner, cargo-audit. Missing tools skip W4. Do not npm install tests/fixtures/supply_chain unless you mean to.
+
+### Not required
+
+- Docker
+- A global mcpaegis on PATH. Activating .venv is enough.
+- Extra Lima mounts. Home is mounted. Paths outside ~ are copied to ~/mcpaegis-servers/<name>/.
+- Linux BCC on the Mac
+- Intel or x86_64 guests
+
+pip install -e puts mcpaegis in .venv/bin. source .venv/bin/activate puts that on PATH. New shells need activate again.
+
+The first full run starts Lima (mcpaegis VM), may brew-install Lima and download Ubuntu, runs eBPF in the guest, then stops the VM (disk kept). Reports default to ~/mcpaegis-out/<server-name>/.
 
 ---
 
