@@ -1,893 +1,420 @@
 # MCPAegis
 
-CLI for **static** and **dynamic (sandboxed runtime)** security analysis of **local MCP (Model Context Protocol) servers** when source is available.
+MCPAegis is a CLI and terminal UI for security analysis of local MCP (Model Context Protocol) servers. MCP servers list tools (named functions with JSON Schema arguments) that an agent can call. MCPAegis does not sit in that agent loop. It audits the server. It covers what the tool listing claims, what the code can do, and what actually happens when a tool is invoked.
 
-Package and command: `mcpaegis`. Requires **Python 3.11+**.
+The resulting vulnerabilities I find are grouped into distinct weakness categories (W1 through W10). I mention how I came up with these below. The tool uses both static analysis and dynamic analysis to gather evidence on the presence of those weaknesses.
 
-MCP servers expose **tools** (named functions with JSON Schema arguments) that an agent can call. MCPAegis does not sit in the agent loop. It audits a **local source tree**: what the server advertises, what the code can do, and (on Linux) what actually happens when a tool is invoked.
+Package and command is mcpaegis. It requires Python 3.11 or newer.
 
-The **product** is one overall finding list (W1–W10). Static analysis and runtime analysis are **evidence sources**, not two scores. A planted bug counts if it appears in the combined report, whether Semgrep named it, eBPF confirmed it, or both. Combined rows still record the source (`static_only` / `runtime_confirmed` / `runtime_only`) so you can see *how* it was found.
-
-```mermaid
-flowchart LR
-  Src["Local MCP server tree"] --> Static["mcpaegis static"]
-  Src --> Dyn["mcpaegis runtime"]
-  Static --> SJ["static-report.json"]
-  Dyn --> RJ["runtime-report.json"]
-  SJ --> Merge["combine/merger"]
-  RJ --> Merge
-  Merge --> CJ["combined-report.json / sarif / md"]
-```
-
-- **Static** never executes tool bodies. It reads metadata and source. It runs on macOS.
-- **Dynamic** *does* call tools as a **local process** in the Lima VM, while eBPF watches that process tree (nested cgroup). It requires **Linux + BCC**. Darwin is the wrong kernel. On Apple Silicon, `mcpaegis` (no args) opens a TUI that starts Lima and runs runtime in the guest ([docs/lima-runtime.md](docs/lima-runtime.md)).
-
-On Apple Silicon, `mcpaegis runtime` and `mcpaegis full` (CLI or TUI) start Lima automatically: static on the Mac, runtime in the guest, merge locally. On Linux they run in-process.
-
-### Current status
-
-- **Catalog is W1–W10.** Old W11 (runtime canary leak) is **W10 runtime evidence**, not a separate ID.
-- **Overall result is the product.** Combined JSON/SARIF/MD is the score. Static and runtime reports are kept so you can see *how* an ID was named (`static_only` / `runtime_confirmed` / `runtime_only`).
-- **Static** runs on macOS or Linux. After discovery, three lanes run in parallel: advertisement (W1 + declared caps), Semgrep (W5/W6/W7), inventory (W4 + static W10). W8 needs sinks only; W3 joins declared vs code.
-- **Runtime** needs Linux + BCC + cgroup v2 (Lima Ubuntu ARM64 on Apple Silicon). No Docker. Pre-exec is a **code-only** dangerous-dispatch gate (no LLM). One **filtered** behavior tree per call (loader/loopback noise dropped; not a raw+simplified pair).
-- **LLM (optional)** is Lane A advertisement (W1 + declared caps) and the runtime Stage 4 **emitter** (W3/W5/W6/W7/W9/W10). No key → regex/keyword fallback for static, code verifier for runtime. Static never fails closed.
-- **W7** means caller-controlled URL reached a fetch, not “we proved there is no allowlist.”
-- **Known overall gaps** (latest `out/full6` Linux + LLM run): Semgrep still emits HIGH W5 on `sanitized_shell` (`shlex.quote` + argv); leftover LOW W3 on stub names. Planted W1–W8/W10 and SSRF W7 otherwise land. Runtime canary W10 has no planted positive fixture yet.
+1. [How I got here](#how-i-got-here)
+2. [What you need](#what-you-need)
+3. [Two modes of operation](#two-modes-of-operation)
+4. [With or without a model](#with-or-without-a-model)
+5. [Key terms and concepts](#key-terms-and-concepts)
+6. [Weakness catalog](#weakness-catalog-w1-w10)
+7. [Capability catalog](#capability-catalog-c1-c12)
+8. [Static analysis](#static-analysis)
+9. [Dynamic analysis](#dynamic-analysis)
+10. [Merge and display](#merge-and-display)
+11. [Setup](#setup)
+12. [Tests and fixtures](#tests-fixtures-ground-truth-vs-observed)
 
 ---
 
-## What it does
+## How I got here
 
-### Weaknesses (W1–W10)
+As expected, the topic of local MCP server security testing is sparsely explored. Being an AI security researcher, I started off and spent a large chunk of my time in literature review on similar solutions to the same problem and I found the following 7 papers. I also mention what I inherited or got inspired by from each of them. I would recommend coming back to this section once the core functioning of the product is understood.
 
-There is one catalog. Every ID below is implemented. There are no reserved / deferred IDs.
+1. mcp-sec-audit (arXiv 2603.21641)
 
-| ID | Name | Evidence | What gets flagged |
-| --- | --- | --- | --- |
-| W1 | Tool poisoning | Static Lane A (LLM or regex) | Tool description/schema contains hidden instructions, jailbreak language, homoglyphs, base64 blobs, or cross-tool override text |
-| W2 | Tool shadowing | Static code (not LLM) | Two tools have lookalike names after normalize/leet (different implementations) |
-| W3 | Over-privileged / capability mismatch | Join declared vs code; runtime can confirm | Code sinks imply a capability the advertisement never declared (`under_declared`), or the reverse (`over_declared`, LOW). Runtime confirms when the process tree shows that undeclared shell/net |
-| W4 | Supply chain | Lane C SCA | `pip-audit` / `npm audit` / `osv-scanner` / `cargo-audit` CVEs; npm install scripts surfaced for review |
-| W5 | Command / SQL injection | Lane B taint `direct`; runtime if `/bin/sh` (etc.) | Tool parameter reaches `shell_exec` / `db_query` / `dynamic_code_load`. Runtime confirms only on a real shell interpreter child — not `/bin/echo` after quoting, not in-process `eval` |
-| W6 | Path traversal | Lane B taint; runtime `FILE_OPEN`/`WRITE` | Untrusted path reaches `file_read` / `file_write`. Runtime needs a non-empty, non-loader path |
-| W7 | SSRF | Lane B taint; runtime `NET_CONNECT`/`DNS` | Untrusted URL reaches `network_call`. Not an allowlist scanner: a real host (e.g. `http://example.com/`) is required to confirm a fetch happened |
-| W8 | Missing access control | Sinks + name heuristic | Privileged sink with no auth-like function name on the call path. MEDIUM if the sink is `direct`, LOW if only `proximate` |
-| W9 | Tool execution hijack | Runtime only | Privileged shell/net/creds that static never attributed to this tool |
-| W10 | Credential exposure | Static regex **or** runtime env/file canary | Hardcoded secrets in source (redacted), and/or a planted canary appearing in the MCP **response** |
+   Gave me the capability framing. It maps code level indicators onto named capability families rather than raw CWE buckets, and it pairs a static rulebook with a Docker plus eBPF runtime monitor. I took the idea that "what can this tool do" should be a first class descriptive layer separate from "what is wrong with this tool," which is why C1 through C12 exist as tags and W1 through W10 exist as findings. Its GitHub repo also confirmed a design detail the paper skipped, which is that confidence should be tracked as a tier (potential, confirmed, runtime only) rather than a boolean.
 
-Discovery and declared capabilities do **not** raise weakness IDs. Semgrep records every sink (`proximate` = pattern/call-graph; `direct` = parameter-to-sink dataflow). Only **direct** sinks become named W5/W6/W7. Proximate sinks still feed W3/W8 and `ExpectedBehaviorProfile`.
+2. MCP-SandboxScan / SandScope (arXiv 2601.01241)
 
-**Overall vs evidence.** Score the combined ID list. Static-only W1 is still a hit. Runtime-confirmed W5 is the same W5. Runtime-only W9 or canary W10 are hits that static could not have produced. Extra IDs (LOW W3 on stubs, Semgrep false W5) are overall noise even if the other pipeline was silent.
+   Reframed what counts as a security sink. Classic SAST (static application security testing) treats a dangerous function call as the sink. SandScope argues that for agent safety the real boundary is the LLM visible MCP response field, since that is where leaked data actually reaches the model. It also plants unique canaries in environment variables, files, and tool arguments, then looks for them (including encoded variants) in the response. Stage 5 canary detection for W10 comes straight from this. Its declared capability profiling also shaped how Lane A derives declared capabilities from tool name and schema argument names.
 
-### Capabilities (descriptive tags, not findings)
+3. MCP at First Glance (arXiv 2506.13538)
 
-Used by Lane A (declared from advertisement — LLM or **tool name + input-schema argument names**) and Lane B (derived from sinks). W3 diffs the two.
+   The reality check on prevalence. It scanned 1,899 real servers with SonarQube plus mcp-scan and found credential exposure to be the single most common vulnerability class. That is why static W10 exists as its own detector and runs in the inventory lane with no dependency on Semgrep, the tool list, or an LLM. It also established that generic SAST alone misses MCP specific issues, which justified building MCP aware detectors instead of wrapping an existing scanner.
+
+4. MCPZoo (arXiv 2607.11086)
+
+   The reason I do not trust scanner output by default. It ran eight popular MCP scanners across roughly 37,000 runnable servers and found that 96.89% of servers got flagged by at least one scanner while manual validation confirmed only 45.53% as true positives, with average pairwise agreement between scanners of 15.66%. That pushed me toward evidence grounded findings, where a static suspicion is labeled as such and gets upgraded only when runtime actually corroborates it. The tier column in the merged report exists because of this paper.
+
+5. FlowGuard (arXiv 2607.14754)
+
+   Contributed two things. First, its lifecycle framing (tool discovery, tool invocation, response consumption) is the layering my catalog uses, which is why W1 and W2 live in the tool listing (name, description, schema, what the agent can read before any call), W5 through W8 are code level, and W9 and W10 land at execution and response level. Second, its triage step ranks tools by risk tokens in parameter names and descriptions before spending any budget on them. My invocation planner ranks the same way, so --max-calls spends its calls on the tools most likely to matter.
+
+6. MTGuard (arXiv 2607.25297)
+
+   The closest thing to a reference architecture for the runtime half. It runs the tool in a container with host side eBPF, attributes events by cgroup, and organizes everything into a behavior tree rooted at the invocation. Three things came from it directly. The cgroup filtered eBPF capture with the seven tracepoints. The single behavior tree per call, so process, file, and network events are attributed to the call that caused them rather than dumped in a flat log. And the pre execution audit that deliberately strips the free text description before deciding anything, on the grounds that the description is exactly what an attacker controls. W9 is its Tool Call Hook category, generalized. The pre execution gate stays code only for the same reason.
+
+7. Corvus (arXiv 2608.00150)
+
+   The odd one out since it scans internet facing servers and I scan local trees. What I borrowed is presentation. It maps every test module to a named taxonomy, scores confidence explicitly, and emits SARIF 2.1.0 so results land in existing tooling. The SARIF writer and --fail-on flag follow that pattern.
+
+I also folded in the OWASP MCP Top 10 and Invariant mcp-scan's issue codes when coming up with the weakness taxonomy. Categories that belong to a different product got cut, so OWASP's Shadow MCP Servers is an asset inventory problem and Lack of Audit and Telemetry is something this tool produces rather than detects. Denial of service was dropped for the same reason Corvus excluded it from active testing. What survived is W1 through W10.
+
+### Where the fixtures come from
+
+Ground truth is the hard part. None of the public benchmarks are labeled against my catalog, so tests/fixtures/ is mostly my own, built as matched pairs where one tree should fire a specific ID and a lookalike tree should not.
+
+Several fixtures are reconstructions from [appsecco/vulnerable-mcp-servers-lab](https://github.com/appsecco/vulnerable-mcp-servers-lab) (MIT), stripped of install time network calls, real keys, and HTTP bind. That lab covers path traversal, eval based RCE, typosquatting, outdated dependencies, and embedded secrets, which maps onto W5, W6, W4, and W10. malicious_tools_adapted and workspace_actions are the most direct adaptations.
+
+The negative fixtures are mine and they are the ones that matter most. unrelated_cleanup exists because reachability does not imply inherent risk (taint), so a tool that calls a helper containing a hardcoded rm must not be flagged for command injection. name_collision exists because a same named function in an unrelated module must not become a taint source, which is why generated taint rules are file scoped. sanitized_shell exists to test whether Semgrep honors shlex.quote. indirect_prompt_injection is a deliberate negative, since hidden text in a response body is out of scope for a source auditor.
+
+---
+
+## What you need
+
+To keep the first version complete and usable on one machine, MCPAegis makes a small set of platform choices. Those choices are deliberate, not a hard ceiling. The same pipelines can be extended to Windows and other hosts later without changing the weakness catalog or report format.
+
+- macOS on Apple Silicon is the supported desktop path (macOS 13.5 or newer). Static analysis runs on the Mac. Runtime analysis runs inside a Lima Ubuntu 24.04 ARM64 guest because eBPF needs a Linux kernel.
+- Linux (stock kernel, cgroup v2, BCC) can run static and runtime in-process. No Lima.
+- Python 3.11 or newer (Homebrew python3.11 on Mac. Default python3 is often too old).
+- A local MCP server path (source you can read). MCPAegis does not fetch remote MCP servers over the network as the audit target.
+- An OpenRouter API key if you want the LLM stages. Put it in a .env at the repo root or your current directory.
+
+  ```
+  MCPAEGIS_LLM_API_KEY=sk-or-...
+  MCPAEGIS_LLM_BASE_URL=https://openrouter.ai/api/v1
+  MCPAEGIS_LLM_MODEL=<an OpenRouter model id>
+  ```
+
+- Homebrew only if Lima is missing. The first Runtime / Full run may download an Ubuntu image (minutes). Guest eBPF uses passwordless sudo -n -E inside Ubuntu, not a Mac password.
+- Optional static extras on PATH. Semgrep (taint and sinks), plus pip-audit / npm audit / osv-scanner / cargo-audit for supply-chain (W4). Missing tools skip that slice. The rest of static still finishes.
+- Lima virtiofs only mounts your home directory. Paths already under ~ are used as-is. Paths outside ~ are copied to ~/mcpaegis-servers/<name>/ (.venv, node_modules, __pycache__, .git skipped). Static still scans the original path. Reports default to ~/mcpaegis-out/<server-name>/.
+- No Docker. The server under test is a local process in a nested cgroup on Linux.
+
+Windows, Intel Mac x86_64 guests, and extra Lima mounts are out of scope for this cut. The auditor / guest split is isolated in mcpaegis/lima/, so those platforms can be added later without rewriting static, dynamic, or merge.
+
+---
+
+## Two modes of operation
+
+Static never executes tool bodies. It reads tool listings and source, then names weaknesses from that metadata, Semgrep sinks, and inventory.
+
+Dynamic does call tools as a local process while eBPF watches that process tree, then confirms or adds findings from real syscalls, DNS, and the MCP response.
+
+You can also run full, which is static then dynamic then merge.
+
+## With or without a model
+
+With a model (OpenRouter key set), Lane A uses the LLM for tool-poisoning (W1) and declared capabilities, Stage 4 uses the LLM as the runtime emitter, and the TUI asks the same model to rewrite the merged markdown into a short terminal report.
+
+Without a model, analysis still runs. Static falls back to regex / keyword rules and never fails closed. Runtime Stage 4 uses the code verifier. Pre-execution deny/allow is always code-only.
+
+---
+
+## Key terms and concepts
+
+Each pipeline is broken into stages, usually by which weaknesses they target. The words below show up in both static and dynamic, so I define them here before the catalogs.
+
+1. Tool
+
+   A named function the MCP server lists for an agent. The tool listing is the name, description, and JSON Schema the agent can read before any call.
+
+2. Finding
+
+   One weakness I named, with a tool, evidence, and a severity. A capability (C1 through C12) is not a finding. It is a tag for what the tool can do.
+
+3. Sink
+
+   A potentially dangerous function call in the source, where the called function leaves the current program's memory. Typical sinks run a shell, read or write a file, talk to the network, or evaluate code.
+
+4. Taint
+
+   Untrusted tool input (a parameter the agent can set) actually reaches that sink, not just that the sink exists somewhere in the file.
+
+5. Semgrep
+
+   The pattern matcher I use in static Lane B. I run it twice. A sink pass marks an API as proximate when the call appears. A taint pass marks it as direct when a tool parameter flows into that call. Only direct sinks become named W5, W6, or W7.
+
+6. Canary
+
+   A unique marker I plant in the process environment or a file during runtime. It is W10 only if that marker (or an encoded form of it) shows up in the MCP response.
+
+7. eBPF
+
+   A Linux kernel tracer. I use it to watch file, process, and network syscalls for the server process tree. On a Mac that tracer runs inside a Lima Ubuntu guest.
+
+8. Severity
+
+   How urgent a finding is, not how sure I am. Surety is the merge tier (static_only, runtime_confirmed, runtime_only).
+
+9. CRITICAL
+
+   The MCP tool can take over the host or steal high-value secrets with little extra work.
+
+10. HIGH
+
+    A real exploit path is present (injection, traversal, SSRF, leaked credentials) and should be fixed before this server is trusted.
+
+11. MEDIUM
+
+    A meaningful weakness exists but needs a specific setup or extra step to abuse.
+
+12. LOW
+
+    A hygiene or over-declaration issue that is worth tracking but is not an immediate exploit.
+
+---
+
+## Weakness catalog (W1-W10)
+
+These are the categories under which each vulnerability can fall.
 
 | ID | Name | Typical evidence |
 | --- | --- | --- |
-| C1 | Filesystem read | `file`, `path`, `dir`; `file_read` sinks |
-| C2 | Filesystem write | write/delete wording; `file_write` sinks |
-| C3 | Shell / process exec | `exec`, `command`, `shell`; `shell_exec` sinks |
-| C4 | Network outbound | `url`, `fetch`, `http`; `network_call` sinks |
-| C5 | Network inbound | listen / bind wording (declared only in v1) |
-| C6 | Database | `sql`, `database`, `postgres`; `db_query` sinks |
-| C7 | Credential handling | `token`, `secret`, `key`; `credential_read` sinks |
-| C8 | Browser automation | `browser`, `page`, `click` |
-| C9 | Cloud / SaaS | cloud product names in argument/tool identifiers |
-| C10 | Code repository | `git`, `repo`, `commit` |
-| C11 | Prompt / template | `prompt`, `template` |
-| C12 | Benign utility | no privileged keywords on the name/arguments |
+| W1 | Tool poisoning | Hidden instructions, jailbreak language, homoglyphs, base64 blobs, or cross-tool override text in the tool listing (name, description, schema) |
+| W2 | Tool shadowing | Two tools with lookalike names after normalize / leet (code, not LLM) |
+| W3 | Over-privileged / capability mismatch | Code sinks imply a capability the tool listing never declared (under_declared), or the reverse (over_declared, LOW) |
+| W4 | Supply chain | pip-audit / npm audit / osv-scanner / cargo-audit CVEs. npm install scripts |
+| W5 | Command / SQL injection | Tool parameter reaches shell_exec / db_query / eval. Runtime confirms a real shell child |
+| W6 | Path traversal | Untrusted path reaches file_read / file_write. Runtime needs a real file open/write |
+| W7 | SSRF | Untrusted URL reaches a fetch. Runtime needs a real host, not a placeholder string |
+| W8 | Missing access control | Privileged sink with no auth-like function name on the call path (name heuristic) |
+| W9 | Tool execution hijack | Runtime only. Privileged shell / net / creds that static never attributed to this tool |
+| W10 | Credential exposure | Hardcoded secrets in source (redacted), and/or a planted env/file canary in the MCP response |
 
-`dynamic_code_load` (`eval` / `exec`) does **not** map to a capability; it is flagged as W5 when taint-confirmed.
+## Capability catalog (C1-C12)
 
-Incidental words in a **docstring** (“matching the query”, “does not mention shell”) are **not** declarations. The argument name `query` is not `DB_ACCESS`; `sql` / `database` are.
+Capabilities are descriptive tags, not findings. They answer what this tool can do. W3 diffs declared caps (from the tool listing name and schema) against code caps (from sinks). If nothing privileged is listed, the declared set is C12 only.
 
----
-
-## Project structure
-
-```
-MCPAegis/
-├── pyproject.toml
-├── README.md
-├── lima.yaml                      # Lima Ubuntu 24.04 ARM64 (vz) for runtime
-├── docs/
-│   ├── lima-runtime.md            # TUI automation + manual guest fallback
-│   ├── todos.md                   # Analysis-quality and product backlog
-│   └── rule-authoring.md          # Semgrep packs + taxonomy extension
-├── mcpaegis/
-│   ├── cli.py                     # TUI when bare; static / runtime / full / report
-│   ├── tui/                       # Textual UI (mode + path)
-│   ├── lima/                      # doctor, VM start, guest venv, runtime argv
-│   ├── core/
-│   │   ├── taxonomy.py            # Capability, Weakness, SinkType, RuntimeEventKind
-│   │   ├── models.py              # Pydantic contracts (reports, findings, sinks)
-│   │   ├── session.py             # AuditSession, LLMConfig, output dir
-│   │   └── mcp_client.py          # stdio JSON-RPC: initialize, list, tools/call
-│   ├── static/
-│   │   ├── pipeline.py            # discovery → parallel lanes → joins → report
-│   │   ├── discovery.py           # Wave 0
-│   │   ├── advertisement.py       # Lane A LLM (W1 + declared caps)
-│   │   ├── metadata_classifier.py # W1 regex fallback + W2 code
-│   │   ├── capability_classifier.py  # declared-cap keyword fallback
-│   │   ├── taint/
-│   │   │   ├── semgrep_runner.py  # Lane B: pattern + taint Semgrep
-│   │   │   ├── call_graph.py      # reverse-BFS tool attribution
-│   │   │   ├── codeql_runner.py   # v2 stub (always empty)
-│   │   │   └── rules/
-│   │   │       ├── python.yaml / javascript.yaml          # pattern → proximate
-│   │   │       └── taint/python-taint.yaml / javascript-taint.yaml
-│   │   ├── injection_findings.py  # Lane B: direct → W5/W6/W7
-│   │   ├── cross_check.py         # W3 join
-│   │   ├── access_control_check.py  # W8
-│   │   ├── inventory.py           # Lane C orchestrator
-│   │   ├── credential_scanner.py  # W10 static
-│   │   ├── sca_scan.py            # W4
-│   │   └── report_builder.py
-
-│   ├── dynamic/                   # Linux + eBPF only
-│   │   ├── pipeline.py
-│   │   ├── sandbox/               # process_provider.py (local process + nested cgroup)
-│   │   ├── ebpf/                  # bpf_programs.c, monitor.py
-│   │   ├── invocation_generator.py
-│   │   ├── canary.py
-│   │   ├── pre_execution_auditor.py
-│   │   ├── behavior_tree.py
-│   │   ├── post_execution_verifier.py  # code fallback
-│   │   ├── runtime_judge.py       # Stage 4 LLM emitter
-│   │   ├── sink_inspector.py
-│   │   └── report_builder.py
-│   ├── combine/merger.py          # static + runtime → CombinedReport
-│   ├── output/                    # json / sarif / md / html + FindingRecord
-│   └── llm/                       # advertisement + runtime judge prompts
-└── tests/
-    ├── unit/
-    ├── integration/
-    └── fixtures/                  # handshake-safe MCP stubs (see catalog below)
-```
+| ID | Name | What it means |
+| --- | --- | --- |
+| C1 | FS_READ | Filesystem read (file, path, directory) |
+| C2 | FS_WRITE | Filesystem write, modify, or delete |
+| C3 | SHELL_EXEC | Shell or process execution (subprocess, run_cmd). Not eval / code load |
+| C4 | NET_OUTBOUND | Outbound network (url, fetch, http) |
+| C5 | NET_INBOUND | Inbound network (listen, bind) |
+| C6 | DB_ACCESS | Database access (sql, postgres). The argument name query alone is not this |
+| C7 | CREDENTIAL_HANDLING | Tokens, secrets, passwords, API keys |
+| C8 | BROWSER_AUTOMATION | Browser / Playwright / click automation |
+| C9 | CLOUD_SAAS | Cloud or SaaS (aws, gcp, s3, stripe) |
+| C10 | CODE_REPO | Git / repo / commit operations |
+| C11 | PROMPT_PROVIDING | Prompt or template providing |
+| C12 | BENIGN_UTILITY | Nothing privileged listed. No external effect |
 
 ---
 
 ## Static analysis
 
-Static answers: *what tools exist, what they claim, what the source can do, and whether those views disagree* — without calling the tools.
+Static never calls the tools. It answers what tools exist, what the listing claims, what the source can do, and whether those views disagree.
 
-Order in [`mcpaegis/static/pipeline.py`](mcpaegis/static/pipeline.py): **wave 0** discovery, then **wave 1** three parallel lanes, then **wave 2** joins (W8 on sinks; W3 after both cap lists), then **wave 3** report.
+The static pipeline is 4 steps. Discovery, then three parallel lanes (A/B/C), then joins, then the report. Order lives in mcpaegis/static/pipeline.py.
 
 ```mermaid
 flowchart TD
-  S0[Discovery]
-  S0 --> A[LaneA advertisement]
-  S0 --> B[LaneB Semgrep]
-  S0 --> C[LaneC inventory]
-
-  A --> Adv["LLM or regex: W1 plus declared caps"]
-  A --> W2[Code W2 shadowing]
-
-  B --> Facts[SinkFacts plus code caps]
-  Facts --> Inj[direct W5 W6 W7]
-  Facts --> W8[W8 unchanged]
-
-  C --> W4[W4 SCA]
-  C --> W10s[W10 static secrets]
-
-  Adv --> W3[W3 join]
-  Facts --> W3
+  S0["1. Discovery. language, entrypoint, tools/list"]
+  S0 --> S1A["2a. Lane A. tool listing W1 + declared caps, code W2"]
+  S0 --> S1B["2b. Lane B. Semgrep sinks then named W5 W6 W7"]
+  S0 --> S1C["2c. Lane C. inventory W4 SCA + static W10 secrets"]
+  S1A --> S2["3. Joins. W3 declared vs code, W8 access-control names"]
+  S1B --> S2
+  S1C --> S2
+  S2 --> S3["4. Static report + expected behavior profile"]
 ```
 
-| Wave | Module | Input | Output | Weakness |
-| --- | --- | --- | --- | --- |
-| 0 | `static/discovery.py` | Path | `ServerMetadata` (tools, language, entrypoint) | — |
-| 1A | `static/advertisement.py` | Tools | `PoisoningFlag`, `DeclaredCapability` | W1 |
-| 1A | `static/metadata_classifier.py` | Tools | `ShadowingFlag` (+ W1 regex fallback) | W2 |
-| 1B | `static/taint/semgrep_runner.py` | Source + tool locations | `SinkFact`, `CodeCapability` | — (facts only) |
-| 1B | `static/injection_findings.py` | `SinkFact` with `confidence=direct` | `InjectionFinding` | W5, W6, W7 |
-| 1C | `static/inventory.py` | Source tree | credentials + SCA | W10 static, W4 |
-| 2 | `static/access_control_check.py` | Privileged sinks, call-path names | `AccessControlFinding` | W8 |
-| 2 | `static/cross_check.py` | Declared vs code caps | `CrossCheckFinding` | W3 |
-| 3 | `static/report_builder.py` | All of the above | `StaticReport` + writers | — |
+### 1. Discovery
 
-`--categories W1,W3,...` skips the matching detectors (empty lists), not the whole pipeline. `--categories W4` / `W10` skip halves of Lane C.
+- Infer language from pyproject.toml / requirements.txt / package.json / Cargo.toml (or file suffixes).
+- Infer the entrypoint as the shell command that would start the server (python server.py, node dist/index.js, and similar).
+- Prefer a live stdio handshake. Spawn that command, send MCP initialize then tools/list (also resources/prompts). Child stderr is discarded so a noisy server cannot deadlock the pipe.
+- If handshake fails, fall back to AST / grep for @mcp.tool() / server.tool("name"). Same goal, worse fidelity (empty schemas). A decorator scan still attaches file and line onto live tools so taint sources are file-scoped handlers.
 
-### Wave 0 — Discovery
+### 2a. Lane A (checks W1 and W2)
 
-Discovery answers three questions: what language is this, how do I start the process, and what does the server advertise.
+- One LLM pass per tool when a key is set, covering poisoning criteria and declared capabilities. No key or bad JSON falls back to regex / keyword.
+- W1 looks for jailbreak / hidden-instruction wording, cross-tool override text, long base64, and homoglyphs. Naming another tool in explanatory prose is not W1.
+- Declared capabilities come from tool name plus schema argument names, not incidental docstring words (query is not database. sql is).
+- W2 stays code. Normalize / leet name collisions (read_file vs read-file). Package typosquats are not W2.
 
-1. **Language** — from `pyproject.toml` / `requirements.txt` / `package.json` / `Cargo.toml` (or file suffixes if there is no manifest).
-2. **Entrypoint** — not a magic MCP field. It is the **shell command** MCPAegis would use to start the server as a child process, for example `python server.py` or `node dist/index.js`. It is inferred from console scripts, `package.json` `bin`/`main`/`scripts.start`, or common filenames (`server.py`, `main.py`, `index.js`).
-3. **Live handshake (preferred)** — spawn that command for ~10s over **stdio JSON-RPC** (NDJSON) and speak MCP: `initialize`, then `tools/list`, `resources/list`, `prompts/list`. Those three catalogs are what MCPAegis enumerates. If this works, tool names/descriptions/schemas come from the running server (`source=live`). Child `stderr` is discarded so a noisy server cannot deadlock the pipe.
-4. **Fallback** — if the process will not start or will not speak MCP, grep/AST the source for registration patterns: Python `@mcp.tool()` / `@server.tool()` decorators (and `server.tool("name")` calls), JS `server.tool("name", ...)`. Same goal (find tools), worse fidelity (empty schemas, no live resources/prompts). `source=static_fallback`.
+### 2b. Lane B (identifies sinks, W5, W6, and W7)
 
-Live discovery still runs the decorator scan afterward only to attach `source_location` (file + line of the handler) onto tools that the handshake already named. Stage 3 taint sources are those handler functions, **file-scoped**.
+Lane B uses Semgrep as described in Key terms. Two runs, then a union.
 
-**Example — `tests/fixtures/eval_format`**
+Only direct sinks with a tool_name become named W5 (shell / SQL / eval), W6 (file), or W7 (network). Proximate sinks still feed W3, W8, and the expected-behavior profile. Missing semgrep gives an empty sink list. Static still finishes.
 
-Handshake starts `python …/eval_format/server.py`. `tools/list` returns `get_qotd` with argument `fmt`. Report header: `Metadata source: live`, `Tools: 1`. Semgrep later uses `source_location.function_name = get_qotd`.
+### 2c. Lane C (W4 and W10, software supply chain)
 
-**Example — `tests/fixtures/supply_chain`**
+- Tree only. No LLM, no Semgrep, no tool list required.
+- Static W10 walks source (skipping .venv, node_modules, binaries) with gitleaks-style regexes. Snippets are redacted. This is the author already wrote a key into the repo, not a planted canary.
+- W4 wraps pip-audit / npm audit / osv-scanner / cargo-audit if they are on PATH, plus LOW W4 for npm preinstall / postinstall hooks even with no CVE. Do not npm install the supply-chain fixture unless you intend to.
 
-`server.js` is not a real MCP server. Handshake fails; `source=static_fallback`, `Tools: 0`. Lane C can still read `package.json`. That is a W4-only tree, not a discovery bug.
+### 3. Joins (W3, W8)
 
-Fixtures are handshake-safe: **import + `initialize` / `tools/list` do no I/O**. Dangerous APIs stay in source so Semgrep can see them. Do not `tools/call` them unless you intend to.
+- W3 diffs Lane A declared caps against Lane B code caps. under_declared is the dangerous direction (hidden power). over_declared is LOW leftover. BENIGN_UTILITY is ignored in the declared set.
+- W8 needs sinks only. Privileged types (shell_exec, file_write, db_query, credential_read) with no require_auth / check_permission-style name on the reverse path. Name heuristic, not a proof of missing auth.
+- --categories W1,W3,... skips matching detectors, not the whole pipeline.
 
-### Lane A — Advertisement (W1 + declared caps) and code W2
+### 4. Static report
 
-[`advertisement.py`](mcpaegis/static/advertisement.py) does **one LLM pass per tool** when `MCPAEGIS_LLM_API_KEY` is set. The prompt includes today’s W1 fast-rule criteria **and** the keyword cheat-sheet for declared capabilities. Sibling JSON objects — poisoning does not fight declared caps.
-
-No key or bad JSON → regex fallback: [`metadata_classifier.py`](mcpaegis/static/metadata_classifier.py) `_poisoning_fast` and [`capability_classifier.py`](mcpaegis/static/capability_classifier.py) `KEYWORD_RULES`. Static does **not** fail closed.
-
-**W1 fast rules** (in the prompt and in the fallback)
-
-| Pattern id | Intent |
-| --- | --- |
-| `hidden_instruction` / `ignore_previous` | Jailbreak / “do not tell the user” |
-| `cross_tool_override` | “When calling X, always use this tool instead…” |
-| `base64_blob` | Long base64 that may hide instructions |
-| `homoglyph` | Cyrillic/Greek lookalikes in ASCII-looking text |
-
-Naming another tool in explanatory prose (“same join as `read_file`”) is **not** W1. Override *wording* still is.
-
-**W2 stays code** (`normalize_tool_name` / leet). Not in the LLM. Flags collisions: `read_file` vs registered name `read-file`. Package typosquats (`twittter-mcp`) are **not** W2.
-
-**Example — `poisoned_description` / `malicious_tools_adapted`**
-
-`summarize` / `get_status` docstrings contain “Ignore previous instructions” and “always use this tool”. Stage 1 emits HIGH W1 (`hidden_instruction`, `ignore_previous`) and MEDIUM W1 (`cross_tool_override`). Innocent sibling `search` is not flagged.
-
-**Example — `tool_shadowing`**
-
-MEDIUM W2: `read_file` shadows `read-file` (similarity 1.0). No W1 from the alias docstring mentioning `read_file`.
-
-**Example — `workspace_actions.write_file`**
-
-“Same naive join as `read_file`” does **not** produce W1.
-
-### Declared capabilities (Lane A, not a finding)
-
-The LLM (or keyword fallback) answers: *what would a client think this tool is allowed to do from the advertised name and arguments?* It is **not** a finding.
-
-Search blob = tool name (underscores → spaces) + schema **property names** + per-argument `title` / `description`. The tool-level docstring is ignored so negations and incidental words cannot declare shell or SQL.
-
-**Example — `overprivileged.search_docs(query)`**
-
-Name `search_docs` + argument `query` → no `SHELL_EXEC`, no `DB_ACCESS` → `BENIGN_UTILITY`. Code still shells (Lane B). W3 will say **under_declared**.
-
-**Example — `write_file(path, content)`**
-
-Name contains `write_file` / `file` → declared `FS_WRITE` and often `FS_READ`. If code only writes, W3 may emit LOW `over_declared` FS_READ. That is name-vs-code leftover, not “query means database.”
-
-**Example — argument `sql` vs `query`**
-
-`lookup(sql=…)` can declare `DB_ACCESS`. `search_docs(query=…)` does not.
-
-### Lane B — Sinks, taint, and named W5/W6/W7
-
-Two Semgrep runs, then a union. Missing `semgrep` → empty sink list (static still finishes). Untracked fixture files are scanned with `--x-ignore-semgrepignore-files`.
-
-```mermaid
-flowchart LR
-  Tools["Tool handlers + files"] --> Pat["python.yaml / javascript.yaml"]
-  Tools --> Gen["Generated taint sources per handler file"]
-  Gen --> Taint["taint/*.yaml"]
-  Pat --> Prox["SinkFact proximate"]
-  Taint --> Dir["SinkFact direct"]
-  Prox --> Attr["Call-graph reverse paths"]
-  Dir --> Attr
-  Attr --> Merge["Per tool,file,line,sink_type: direct wins"]
-  Merge --> Caps["CodeCapability via SINK_TO_CAPABILITY"]
-  Merge --> Inj["Named W5/W6/W7 if direct"]
-```
-
-**Pattern pack** (`python.yaml` / `javascript.yaml`): “this API appears.” Attribution is containment or reverse call-graph (≤10 hops). Confidence = **`proximate`**. Reachable, not proven dataflow.
-
-**Taint pack** (`taint/*.yaml` plus generated YAML): sources are `def <handler>(...):` **only in that handler’s file**, so a same-named function in another module is not a source (`name_collision`). Sinks are `subprocess.run`, `open($PATH, ...)`, `eval`, `requests.get`, etc. Generated rules copy **sink-type sanitizers** (`shlex.quote` only for `shell_exec` — quoting does not sanitize `open`/`eval`). Confidence = **`direct`**.
-
-Python `open($PATH, ...)` matches keyword arguments (`encoding=`) as well as a mode string.
-
-Snippets are the **source line at `file:line`**, not Semgrep’s `extra.lines` window.
-
-| `SinkFact.confidence` | How it is earned | Becomes a named W5/W6/W7? |
-| --- | --- | --- |
-| `proximate` | Pattern pack hit, attributed by containment or reverse call-graph (≤10 hops) | No — still used for W3, W8, profiles |
-| `direct` | Taint-mode: tool parameter flows into the sink. Sources are file-scoped to the handler | Yes, if `tool_name` is set |
-
-Shared helpers emit **one `SinkFact` per attributing tool**. The same line can be `direct` for one tool and `proximate` for another.
-
-| `sink_type` | Capability | Injection ID (direct only) |
-| --- | --- | --- |
-| `shell_exec` | C3 `SHELL_EXEC` | W5 |
-| `db_query` | C6 `DB_ACCESS` | W5 |
-| `dynamic_code_load` | *(none)* | W5 |
-| `file_read` | C1 `FS_READ` | W6 |
-| `file_write` | C2 `FS_WRITE` | W6 |
-| `network_call` | C4 `NET_OUTBOUND` | W7 |
-| `credential_read` | C7 `CREDENTIAL_HANDLING` | — (feeds W3/W8, not injection IDs) |
-
-**Example — `command_injection`**
-
-`run_cmd(command)` → `subprocess.run(command, shell=True)`. Taint: parameter → sink → `direct` `shell_exec`.
-
-**Example — `unrelated_cleanup`**
-
-`search_docs` calls `_internal_cleanup()` which runs hardcoded `CLEANUP_CMD`. Pattern mode still sees `subprocess.run` (reachable) → **proximate**. Taint must **not** mark `direct` because `query` never reaches the sink. **No W5.**
-
-**Example — `workspace_actions.read_file`**
-
-`full = os.path.join(WORKSPACE, path)` then `open(full, encoding="utf-8")`. `open($PATH, ...)` matches. Taint follows `path` → `full` → `open` → `direct` `file_read`.
-
-**Example — `sanitized_shell` (known Semgrep miss)**
-
-`quoted = shlex.quote(command)` then `subprocess.run(["/bin/echo", quoted])` (no `shell=True`). Sanitizer is listed; Semgrep often still reports `direct`. Expect HIGH W5 until the engine honors assign + list wrapping. Proximate subprocess would still be legitimate.
-
-Named W5/W6/W7 live in the **same lane**. Semgrep already decided `direct` vs `proximate`. [`injection_findings.py`](mcpaegis/static/injection_findings.py) does **not** re-run taint, and it does **not** “upgrade sink confidence to HIGH.” Confidence on a `SinkFact` stays `direct`/`proximate`. Severity is a separate field on the **finding**.
-
-What it actually does:
-
-1. Keep sinks with `confidence=direct` **and** a `tool_name`. Drop `proximate` and unattributed hits.
-2. Map `sink_type` → weakness ID: shell / SQL / `eval` → **W5**, `open`/write → **W6**, network → **W7**. (`credential_read` is not mapped; it only feeds W3/W8.)
-3. Emit an `InjectionFinding` with `severity=HIGH` and `confidence="direct"`.
-
-So `direct` means “Semgrep proved parameter → sink.” HIGH means “we are willing to name that as W5/W6/W7.” A proximate `subprocess.run` is still a real sink for W3/W8/profiles; it never becomes a named injection finding.
-
-W3/W8 **also** look at sink confidence, but that is Stages 4–5 (under-declared shell is HIGH only if a supporting sink is `direct`; W8 is MEDIUM if `direct`, LOW if `proximate`). That is independent of 3.5.
-
-**Example — `eval_format`**
-
-`get_qotd` → `return str(eval(fmt))` → Lane B `direct` `dynamic_code_load` → HIGH W5. Snippet is that line.
-
-**Example — `ssrf`**
-
-`fetch_url(url)` → `requests.get(url)` → HIGH W7.
-
-**Example — `path_traversal`**
-
-`Path(path).read_text(...)` → HIGH W6.
-
-**Example — `unrelated_cleanup`**
-
-Lane B `proximate` `shell_exec` only → **no** injection row. W3 may still emit MEDIUM.
-
-### Wave 2 — W3 join (declared vs code)
-
-[`cross_check.py`](mcpaegis/static/cross_check.py) diffs Lane A declared caps vs Lane B code caps. It is the only true join. W3 must not do auth or injection IDs.
-
-- **`under_declared`**: code has a cap the advertisement does not. Dangerous direction (hidden power).
-- **`over_declared`**: advertisement claims a cap code sinks do not show. LOW; often keyword leftover.
-
-`BENIGN_UTILITY` is ignored in the declared set.
-
-### Severity vs confidence
-
-| Finding | HIGH / MEDIUM / LOW |
-| --- | --- |
-| W3 `under_declared` for `SHELL_EXEC`, `CREDENTIAL_HANDLING`, `NET_OUTBOUND` | HIGH if a supporting sink is `direct`; otherwise MEDIUM |
-| W3 `under_declared` for other caps | MEDIUM |
-| W3 `over_declared` | LOW |
-| W8 privileged sink, no auth-like name on the path | MEDIUM if `direct`, LOW if `proximate` |
-| W5 / W6 / W7 | HIGH (direct only) |
-
-**Example — `overprivileged`**
-
-Declared: none privileged. Code: `direct` `SHELL_EXEC`. HIGH W3 `under_declared` + HIGH W5.
-
-**Example — `unrelated_cleanup`**
-
-Proximate shell only → MEDIUM W3 `under_declared` SHELL_EXEC, **no** W5.
-
-**Example — stub `read_file` in `tool_shadowing`**
-
-Name declares `FS_READ`; no sink → LOW `over_declared`.
-
-### Wave 2 — Missing access control (W8)
-
-W8 needs **SinkFacts only**. It can run as soon as Lane B finishes — it does not wait on the LLM or inventory. Same shell sink may still emit **both** W3 and W8.
-
-Privileged sink types: `shell_exec`, `file_write`, `db_query`, `credential_read`. If no function on the reverse path matches `require_auth` / `check_permission` / `login_required` / …, emit W8.
-
-This is a **name heuristic**, not a proof of missing auth. Stubs without login will always fire. `file_read` / `network_call` / `eval` are not in this privileged set, so `path_traversal` and `eval_format` do not get W8 from those sinks.
-
-**Example — `missing_access_control`**
-
-Docstring *admits* subprocess; no auth helper → MEDIUM W8 (direct) plus W5.
-
-**Example — `command_injection` / `workspace_actions.write_file`**
-
-Same W8 on the privileged sink. Expected for fixtures, not a misfire of W5/W6.
-
-### Lane C — Inventory (W4 + static W10)
-
-Tree only. No LLM, no Semgrep, no tool list required. [`inventory.py`](mcpaegis/static/inventory.py) calls both scanners.
-
-**W10 static** is source scanning. MCPAegis does **not** call the tool and does **not** plant credentials. It walks the tree (skipping `.venv`, `node_modules`, binaries) and matches gitleaks-style regexes: `AKIA…` AWS keys, `api_key = "…"`, PEM headers, JWTs, `ghp_`, Slack `xox…`, Google `AIza…`.
-
-Hits become `StaticCredentialFinding`. The snippet is **redacted** (`AKIA…MPLE [sha256=…]`) so reports never store the raw secret.
-
-Runtime **W10** is the other evidence path for the same ID: we *plant* unique env/file canaries in the sandbox and see if they come back in the MCP response. Static W10 = “the author already wrote a key into the repo.” Runtime W10 = “at runtime the process leaked a secret we introduced.”
-
-**Example — `static_credentials`**
-
-Module constants `AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"` and `API_KEY = "mcp_demo_…"`. The `echo` tool just returns `text`; secrets are **not** in the return value. HIGH W10 with no Semgrep and no `tools/call`.
-
-**W4 supply chain:** MCPAegis does **not** implement its own CVE API. [`sca_scan.py`](mcpaegis/static/sca_scan.py) wraps tools **if they are on `PATH`**:
-
-| Wrapper | When it runs | Who talks to a vuln DB |
-| --- | --- | --- |
-| `pip-audit -f json` | `pyproject.toml` or `requirements.txt` | pip-audit (PyPI / OSV) |
-| `npm audit --json` | `package.json` | npm registry advisories |
-| `osv-scanner --format json -r` | always attempted | Google OSV |
-| `cargo audit --json` | `Cargo.toml` | RustSec |
-| npm install-script scan | `package.json` has `preinstall` / `postinstall` / `install` / `preuninstall` | **nobody** — local JSON only |
-
-If the CLI is missing, that wrapper returns nothing (static still finishes). Findings are deduped on `(package, version, CVE, source_tool)`.
-
-Install-script rows are **always** LOW W4 even with no CVE: a `postinstall` hook is a supply-chain footgun whether or not lodash is pinned to a known CVE. Do not `npm install` the fixture unless you intend to exercise audit.
-
-**Example — `supply_chain`**
-
-Handshake fails (`Tools: 0`). Lane C still reads `package.json` → LOW W4 `mcpaegis-supply-chain-fixture (postinstall)@0.0.1`. If `npm audit` is installed, lodash `4.17.20` may add extra CVE rows.
-
-### Wave 3 — Report
-
-Assembles `StaticReport`, writes `static-report.json` / `.sarif` / `.md`, and builds per-tool **`ExpectedBehaviorProfile`**: declared caps, code caps, sink ids, known weakness flags. The runtime judge / code verifier consumes that profile as “what we already believed before calling the tool.”
+- Writes static-report.json / .sarif / .md.
+- Builds per-tool expected behavior profiles (declared caps, code caps, sink ids, known flags) for the runtime judge.
+- Static-only IDs that typically never need a syscall are W1, W2, W4, W8, and regex W10.
 
 ---
 
 ## Dynamic analysis
 
-Dynamic answers: *when we actually call the tool, does the process tree, DNS, and response match the static profile — and did planted canaries leak?*
+Dynamic answers whether the process tree, DNS, and response match the static profile when I actually call the tool, and whether planted canaries leaked.
 
-It is **not** a replacement for static. Static never runs `eval(fmt)`. Dynamic never reads Semgrep. Together they fill one overall list: static hypothesizes; runtime confirms or adds behavior static could not see.
+The dynamic pipeline is 7 steps (0 through 6). Launch and eBPF, plan calls and plant canaries, pre-exec gate, one filtered behavior tree, judge vs static profile, canary vs MCP response, then the runtime report.
 
-Runtime does **not** implement W4. W10 is shared: static regex in source, plus runtime canaries (unique `MCPAEGIS_CANARY_…` strings) in the MCP response. Canaries are test markers, not the author’s AWS keys.
-
-```mermaid
-flowchart LR
-  Mac["macOS Darwin"] -->|"limactl shell"| Guest["Ubuntu VM stock kernel"]
-  Guest --> Auditor["mcpaegis + python3-bpfcc"]
-  Auditor -->|"spawn"| Server["MCP server stdio"]
-  Server --> Nested["nested cgroup mcpaegis-*"]
-  Auditor -->|"eBPF attach on guest kernel"| Filter["filter cgroup inode"]
-  Nested --> Filter
-```
-
-**Why a VM, and why not Docker Desktop**
-
-- The **Linux kernel that runs `mcpaegis`** is where BCC compiles and attaches eBPF. Darwin has no Linux tracepoints. Docker Desktop’s LinuxKit VM does not count: the CLI still runs on Darwin and exits at `platform.system() != "Linux"`.
-- The **server under test** is a child process of `mcpaegis`, moved into a nested cgroup. BPF keeps events whose `bpf_get_current_cgroup_id()` matches that inode. Without that fence, BPF would see apt, ssh, leftover shells on the auditor host.
-- On Apple Silicon use Lima ([docs/lima-runtime.md](docs/lima-runtime.md)): **guest kernel** for BCC, **guest process** for the server. No Docker.
-
-### Glossary (what the machinery is)
-
-| Term | What it is | Why MCPAegis cares |
-| --- | --- | --- |
-| **Kernel** | The OS core. Every `open`, `execve`, `connect` is a **syscall** the kernel handles. | eBPF programs run *in* the kernel. macOS and LinuxKit are the wrong kernel for our C program. |
-| **Syscall / tracepoint** | Stable kernel hook. Named `syscalls:sys_enter_execve` kprobes miss ARM64 (`openat2`, `execveat`). | [`bpf_programs.c`](mcpaegis/dynamic/ebpf/bpf_programs.c) uses `raw_tracepoint/sys_enter` (openat/openat2/execve/execveat/connect/unlinkat) plus `kretprobe/kernel_clone` and UDP DNS kprobes. |
-| **eBPF** | Small programs the kernel JIT-compiles and runs at those hooks. They cannot sleep or wander the heap; they copy a tiny `event_t` and exit. | Our filter is one compare: `bpf_get_current_cgroup_id() == TARGET_CGROUP_ID`. Mismatch → drop. Match → `perf_submit`. |
-| **BCC** | BPF Compiler Collection (`python3-bpfcc`). Compiles the `.c` with **this** kernel’s headers (`linux-headers-$(uname -r)`) and BTF (`/sys/kernel/btf/vmlinux`). | [`monitor.py`](mcpaegis/dynamic/ebpf/monitor.py) `BPF(text=…, cflags=["-DTARGET_CGROUP_ID=…"])`. Headers must match the running kernel. |
-| **BTF** | Compact type info for the live kernel. | Lets BCC resolve `task_struct` without a full debug kernel. Probe: `test -e /sys/kernel/btf/vmlinux`. |
-| **cgroup (v2)** | Kernel “folder of processes” used for limits and accounting. | [`process_provider.py`](mcpaegis/dynamic/sandbox/process_provider.py) mkdir’s a nested group `mcpaegis-<pid>-<ts>` and moves the MCP server into it (`preexec` writes `cgroup.procs`). Children inherit. |
-| **inode** | Number identifying that cgroup directory on `cgroupfs` (`stat -c '%i'`). `bpf_get_current_cgroup_id()` returns the same number. | Compiled into the BPF program as `TARGET_CGROUP_ID`. ssh/apt on the guest (different inode) are invisible. |
-| **perf buffer** | Kernel ring buffer BPF writes into; user space polls. | `Monitor.drain()` → `RuntimeEvent` list for one `tools/call`. |
-
-**Example — one `echo hello` under the microscope**
-
-1. Lima guest kernel is Linux. `mcpaegis` (Python) + BCC live here.
-2. `Popen` starts `python server.py` in a nested cgroup `/sys/fs/cgroup/…/mcpaegis-<pid>-<ts>`, inode `4242`.
-3. Host BPF: `if (cgroup_id != 4242) return;`. `apt upgrade` on the guest is inode `99` → dropped.
-4. MCP `tools/call run_cmd {"command":"echo hello"}`.
-5. Kernel: `clone` then `execve("/bin/sh", ["sh","-c","echo hello"])` (or `/bin/echo`). `raw_tracepoint/sys_enter` fires, BPF keeps the event if the cgroup matches, user space builds a tree with a child exec. Stage 4 maps that to observed `SHELL_EXEC` and **confirms static W5** when the profile already knew about shell.
-
-```mermaid
-sequenceDiagram
-  participant CLI as mcpaegis on Linux
-  participant Srv as MCP server
-  participant Kern as guest kernel
-  participant BPF as eBPF programs
-  CLI->>CLI: mkdir nested cgroup
-  CLI->>Srv: Popen python server.py (enter cgroup)
-  CLI->>Kern: BCC load bpf_programs.c TARGET=INODE
-  CLI->>Srv: MCP initialize / tools/list
-  CLI->>Srv: tools/call
-  Srv->>Kern: execve / connect / openat
-  Kern->>BPF: raw_tracepoint/sys_enter
-  BPF-->>CLI: event if cgroup matches
-  CLI->>CLI: filtered tree then W9 / W10
-```
+On Apple Silicon, mcpaegis runtime and mcpaegis full start Lima automatically, run runtime in the guest, then merge locally. On Linux they run in-process. Darwin is the wrong kernel for BCC, and Docker Desktop's LinuxKit VM does not count.
 
 ```mermaid
 flowchart TD
-  D0[Process plus cgroup plus eBPF]
-  D0 --> D1[Plan invocations plus canaries]
-  D1 --> D2[Code policy gate]
-  D2 -->|deny| Skip[Skip tools/call]
-  D2 -->|allow| Call[tools/call plus drain BPF]
-  Call --> D3[One filtered behavior tree]
-  D3 --> D4[Judge or code verifier]
-  Call --> D5[Canary vs response W10]
-  D4 --> D6[Runtime report]
+  D0["0. Local process + nested cgroup + eBPF"]
+  D0 --> D1["1. Plan invocations + plant env/file canaries"]
+  D1 --> D2["2. Pre-exec code gate. allow or skip"]
+  D2 --> D3["3. tools/call + drain BPF + one filtered tree"]
+  D3 --> D4["4. Judge or code verifier vs static profile"]
+  D3 --> D5["5. Canary vs MCP response W10"]
+  D4 --> D6["6. Runtime report"]
   D5 --> D6
 ```
 
-| Step | Module | Input | Output | Weakness |
-| --- | --- | --- | --- | --- |
-| 0 | `dynamic/sandbox/process_provider.py` | Server path, entrypoint | Local process + cgroup inode + stdio | — (or `RuntimeUnavailableError`) |
-| — | `dynamic/ebpf/monitor.py` | Cgroup inode | `RuntimeEvent` stream | — |
-| 1 | `dynamic/invocation_generator.py` + `canary.py` | Tools, schema, optional test script | Ranked `PlannedInvocation`s + `CanarySeed`s | — |
-| 2 | `dynamic/pre_execution_auditor.py` | Argument values | `allow` / `deny` (code only) | Deny skips the call (no finding ID) |
-| 3 | `dynamic/behavior_tree.py` | Events for one call | One filtered `ToolBehaviorTree` | — |
-| 4 | `dynamic/post_execution_verifier.py` + `runtime_judge.py` | Tree + `ExpectedBehaviorProfile` | Mismatches, confirmed / runtime-only IDs | W9; confirm W3/W5/W6/W7/W10 |
-| 5 | `dynamic/sink_inspector.py` | MCP response + env/file seeds | `SinkWitness` | W10 runtime |
-| 6 | `dynamic/report_builder.py` | All of the above | `DynamicReport` | Derives `RuntimeFinding`s |
+### 0. Process, cgroup, eBPF
 
-### Stage 0 — Local process and eBPF
+- Popen starts the MCP server in the Lima guest (or on Linux) with cwd set to the server tree and stdio piped for NDJSON.
+- A nested cgroup mcpaegis-<pid>-<ts> is created and the server PID is written to cgroup.procs. Children inherit. BPF keeps events only when bpf_get_current_cgroup_id() matches that inode.
+- Events cover file open/read/write/unlink, connect, exec/fork, and DNS. Loader paths and loopback are dropped later as noise.
+- If Linux / cgroup v2 / BCC is missing, runtime exits 1. full warns and writes a static-only combined report.
 
-[`process_provider.launch`](mcpaegis/dynamic/sandbox/process_provider.py) starts the MCP server with `Popen` in the Lima guest:
+### 1. Invocations and canaries
 
-- cwd = the server tree (same path as on the Mac via virtiofs)
-- extra env (the env canary)
-- stdin/stdout piped for MCP NDJSON
-- `preexec_fn` writes the new PID into a nested `cgroup.procs`
+- --test-script (YAML/JSON) wins per tool, otherwise schema auto-fill (path becomes /tmp/mcpaegis-placeholder-path, other strings become mcpaegis-placeholder). Rank by risk tokens. --max-calls caps the list.
+- An env canary (MCPAEGIS_CANARY_ENV) is set on the process. A file canary is written to out/canaries/secret.canary. Neither is passed as a tool argument.
+- A canary hit is W10 only if that unique marker (or base64 / hex / rot13 of it) appears in the MCP response.
+- Canaries are test dye, not your .env.
 
-The nested group is `/sys/fs/cgroup/…/mcpaegis-<pid>-<ts>`. Its inode is compiled into BPF as `-DTARGET_CGROUP_ID=<inode>`. Children of the server inherit the cgroup.
+### 2. Pre-execution audit
 
-Events: `FILE_OPEN` / `READ` / `WRITE` / `UNLINK`, `NET_CONNECT`, `PROC_EXEC` / `FORK`, `DNS_RESPONSE`.
+- Code-only regex on argument values, covering sensitive paths, rm -rf /, curl | sh, and similar.
+- Deny skips tools/call. This is not a weakness ID and there is no LLM on this path.
+- Example. auto path=/etc/passwd is denied. Test-script command=echo hello is allowed.
 
-Handshake uses the same NDJSON client as static, against the process stdin/stdout.
+### 3. One filtered behavior tree
 
-If Linux/cgroup v2/BCC is missing, `mcpaegis runtime` exits 1. `mcpaegis full` warns and writes a static-only combined report.
+- While the call runs, the monitor captures events for it. Filter noise first (loader libs, .so, loopback), then build a single tree. Nodes are from the capability list.
+- PROC_EXEC / FORK become process nodes, connect / DNS become the network branch, and file events hang off the issuing pid.
+- Filter is cgroup, not this call's child only. The long-lived server pid is in the tree.
+- Example. run_cmd with echo hello should show /bin/sh or /bin/echo. eval(fmt) is in-process and must not look like a shell child.
 
-**Example**
+### 4. Post-execution vs static profile
 
-`mcpaegis runtime ./tests/fixtures/command_injection --output ./out` on Darwin → error pointing at [docs/lima-runtime.md](docs/lima-runtime.md). Same command **inside** `limactl shell mcpaegis` after `python3-bpfcc` + `pip install mcp`.
+- Map the tree to observed capabilities (exec to shell, connect to net, sensitive paths to FS / credentials) and diff against the static profile.
+- With a key, the LLM emits runtime evidence for W3 / W5 / W6 / W7 / W9 / W10. Static-only IDs (W1, W2, W4, W8) are stripped even if the model names them. Without a key, the code verifier is the fallback.
+- Observed cap already in static known_flags becomes a confirm. Privileged cap not in declared or code becomes W9. Cap not seen on this one call is a mismatch, not a proof of absence.
 
-### Stage 1 — Invocations and canaries
+### 5 and 6. Canaries, report
 
-Canaries answer: **did a secret-shaped value we planted show up in what the tool returned to the MCP client?** The VM is isolation from your Mac; the nested cgroup is isolation from other guest processes.
-
-They are **not** your `.env`. They are **not** argument-echo / prompt-injection checks (we do not plant markers as JSON argument values). A canary hit is **W10 runtime evidence** for the same ID as hardcoded secrets.
-
-A canary is a unique `MCPAEGIS_CANARY_<uuid>` minted for **this run**. If that blob (or base64/hex/rot13 of it) appears in the `tools/call` JSON, it came from this plant.
-
-**Two plant sites** ([`canary.py`](mcpaegis/dynamic/canary.py), [`pipeline.py`](mcpaegis/dynamic/pipeline.py)):
-
-| Kind | What we do | Analogy | Finding if it appears in the MCP **response** |
-| --- | --- | --- | --- |
-| `env` | Set `MCPAEGIS_CANARY_ENV=<marker>` on the server process | Same as `HOME=…` on the process | **W10** — tool dumped environment |
-| `file` | Write `<marker>` into `out/canaries/secret.canary` | Stand-in for `.env` / `id_rsa` sitting on disk | **W10** — tool returned file bytes |
-
-We do **not** scan process memory. eBPF may still show `open`/`read`. Runtime W10 is only: **dye in the JSON the client got.**
-
-#### Env canary (1)
-
-Every runtime launch sets one extra environment variable on the server process, like `HOME`. A `search` tool should never read it or put it in the result. `return dict(os.environ)` → Stage 5 sees the marker → CRITICAL W10.
-
-#### File canary (2)
-
-This is **not** a second env var and **not** “export.” We **write a bait file** next to the report. We **never** pass that path as a tool argument.
-
-1. Guest: `out/canaries/secret.canary`. Contents: one line, the marker.
-2. Auto-fill for path-like args (`path`, `file`, …) is **`/tmp/mcpaegis-placeholder-path`**, not the bait. Non-path strings get `mcpaegis-placeholder`.
-
-W10 on a file seed means the process **went fishing**: it opened `secret.canary` even though we did not ask it to, and **put those bytes in the MCP result**. Same story as reading `id_rsa` without being given that path.
-
-- `search_docs(query)` / `read_file(path=/tmp/mcpaegis-placeholder-path)` returning the marker → **W10**.
-- A test script that *intentionally* passes the bait path would make returning the bytes the feature; don’t do that if you want runtime W10 to mean “unauthorized read.”
-
-Static **W6** is “untrusted path reached `open`.” Runtime W10 is “our secret marker came back in the reply.”
-
-Prefer a test script for shells:
-
-```yaml
-- tool_name: run_cmd
-  arguments:
-    command: echo hello
-```
-
-[`invocation_generator.py`](mcpaegis/dynamic/invocation_generator.py): `--test-script` wins per tool; else schema auto-fill (path → dummy `/tmp/…`, never the bait file; other strings → placeholder); rank by risk tokens; `--max-calls`. The bait file is planted in Stage 0 / pipeline, not as an argument.
-
-### Stage 2 — Pre-execution audit (code only)
-
-[`pre_execution_auditor.py`](mcpaegis/dynamic/pre_execution_auditor.py) is a **dangerous-dispatch kill switch**. Regex on **argument values**: sensitive paths, `rm -rf /`, `curl|sh`, …. Deny → skip `tools/call`. **Not a weakness ID.** There is no LLM text policy on this path.
-
-**Example**
-
-Auto `path=/etc/passwd` → **deny**. Test-script `command=echo hello` → **allow**, then Stage 3 may see `/bin/echo` or `sh -c` under the sandbox cgroup.
-
-### Stage 3 — One filtered behavior tree
-
-While the call runs, the monitor drains events. [`behavior_tree.assemble`](mcpaegis/dynamic/behavior_tree.py) **filters noise first**, then builds a **single** `ToolBehaviorTree`. Loader paths (`/usr/lib/`, `site-packages/`, `.so`, `/dev/null`, …) and loopback `connect`/DNS (`127.0.0.1`, `::1`) are dropped — those are boring interpreter syscalls, not attacks. Raw events may stay on disk for debug; they are not a second product tree.
-
-Filter is **cgroup**, not “this call’s child only.” The long-lived server pid is in the tree; `drain()` per `tools/call` keeps one invocation’s window.
-
-`PROC_EXEC` / `FORK` become process nodes; `NET_CONNECT` / `DNS_RESPONSE` become the DNS branch; file events hang off the issuing pid.
-
-**Example — `command_injection` after `echo hello`**
-
-The tree shows a child exec (`/bin/sh` or `/bin/echo`). That is evidence, not a finding yet. Stage 4 interprets it against the static profile.
-
-**Example — `ssrf` after `tools/call fetch_url`**
-
-`NET_CONNECT` + maybe `DNS_RESPONSE` for the argument host. That confirms a **fetch happened**. An allowlist that includes `example.com` would look the same. No allow/deny list is **why the fixture is vulnerable**, not what Semgrep or eBPF searches for. If static already had `NET_OUTBOUND` / W7, Stage 4 **confirms**. If static had no net cap, Stage 4 can emit **W9**.
-
-### Stage 4 — Post-execution vs static profile
-
-[`post_execution_verifier.py`](mcpaegis/dynamic/post_execution_verifier.py) maps the filtered tree to **observed capabilities** (exec → `SHELL_EXEC`, connect → `NET_OUTBOUND`, sensitive paths → credential/FS, …) and diffs them against `ExpectedBehaviorProfile` from static wave 3. That code pass is the **fallback** when no LLM key is set.
-
-When `MCPAEGIS_LLM_API_KEY` is set, [`runtime_judge.py`](mcpaegis/dynamic/runtime_judge.py) **emits** runtime findings from the same context (tree, declared/code/observed caps, args, static hints). Runtime-emittable: W3, W5, W6, W7, W9, W10. Static-only IDs (W1, W2, W4, W8) are stripped even if the model names them.
-
-| Situation | Result |
-| --- | --- |
-| Observed cap already in static `known_flags` as W5/W6/W7/W3 | **Confirm** that static ID (`status=confirmed`) |
-| Observed privileged cap (`SHELL_EXEC` / `NET_OUTBOUND` / credentials) **not** in declared or code | **W9** hijack (`runtime_only`) |
-| Declared/code cap not observed on this call | mismatch recorded; not automatically a weakness (one call is not a proof of absence) |
-| LLM verdict `false_positive` / `absent` | no runtime finding for that ID |
-
-Without `static-report.json`, profiles are empty: declared-vs-observed is skipped (warning); W9 still possible if privileged behavior appears with nothing expected.
-
-**Example — `overprivileged`**
-
-Static: HIGH W3 + W5. Runtime `subprocess` child → confirm W5 (and/or W3). Not a new W9 — shell was already in the code profile.
-
-**Example — W9 shape**
-
-Tool advertised and coded as “search”; at runtime a child `curl` or `bash` appears that static never attributed. Observed `NET_OUTBOUND` / `SHELL_EXEC` not in profile → W9.
-
-### Stage 5 — Env/file canaries in the MCP response (W10)
-
-[`sink_inspector.py`](mcpaegis/dynamic/sink_inspector.py) walks string leaves of the JSON-RPC result. It matches **only** `env` and `file` seeds (exact / prefix / suffix / base64 / hex / rot13). Argument-shaped seeds are ignored. A hit is **W10**.
-
-If the server reads `MCPAEGIS_CANARY_ENV`, writes it to `/tmp/x`, and **never puts it in the MCP result**, Stage 5 is silent (eBPF might still show `FILE_WRITE`).
-
-| | Mechanism |
-| --- | --- |
-| **W10** (static) | Author already wrote `AKIA…` in source. No call, no plant. |
-| **W10** (runtime) | *We* planted env or `out/canaries/*.canary`; that marker came back in the tool response. |
-
-**Example — env W10**
-
-Process has `MCPAEGIS_CANARY_ENV=MCPAEGIS_CANARY_deadbeef`. Tool returns `os.environ` inside `content` → CRITICAL W10.
-
-**Example — file W10**
-
-`out/canaries/secret.canary` holds `MCPAEGIS_CANARY_cafe`. Calls use some other path (or no path). The result still contains the marker → the tool read a file it was not given → CRITICAL W10.
-
-### Stage 6 — Runtime report
-
-Derives `RuntimeFinding`s from verifications + witnesses, writes `runtime-report.json` / `.sarif` / `.md`.
-
-| ID | Typical severity |
-| --- | --- |
-| Confirmed W5 / W6 / W7 / W3 | HIGH |
-| W9 | CRITICAL |
-| W10 (canary) | CRITICAL |
-
-### Combine (overall list)
-
-[`combine/merger.py`](mcpaegis/combine/merger.py) unions static and runtime into one finding list. **That list is the result.** The tier is provenance, not a second score:
-
-| Tier | Meaning |
-| --- | --- |
-| `static_only` | Named from source/metadata; runtime did not (or need not) confirm. W1/W2/W4/W8 and static W10 typically stay here |
-| `runtime_confirmed` | Same ID in static *and* the behavior tree / canary (typical W3/W5/W6/W7; W10 if both regex and canary hit) |
-| `runtime_only` | Runtime evidence with no static counterpart (W9, canary W10, or extra W3) |
-
-On macOS, `mcpaegis full` produces `static_only` rows plus a warning. W4 stays `static_only` even on Linux — runtime does not call `npm audit`.
+- Stage 5 walks string leaves of the JSON-RPC result against env and file seeds only.
+- If the process reads the canary and never puts it in the MCP result, Stage 5 is silent (eBPF might still show a file read).
+- Stage 6 writes runtime-report.json / .sarif / .md. Confirmed W5/W6/W7/W3 are HIGH. W9 and canary W10 are CRITICAL.
 
 ---
 
-## Install
+## Merge and display
+
+mcpaegis full (and the TUI Full path) unions static and runtime into one finding list. That list is the result.
+
+| Tier | Meaning |
+| --- | --- |
+| static_only | Named from source / metadata. Runtime did not (or need not) confirm. Typical W1, W2, W4, W8, regex W10 |
+| runtime_confirmed | Same ID in static and the behavior tree or canary |
+| runtime_only | Runtime evidence with no static counterpart (W9, canary W10, extra W3) |
+
+On macOS, static stays on the Mac so Semgrep is not lost under guest sudo secure_path. Runtime runs in Lima. Merge happens locally. After each Runtime / Full run the VM is stopped (disk and guest venv kept) so host RAM/CPU are freed.
+
+When you use the TUI with a model, MCPAegis then sends the merged markdown to the LLM and streams a rewritten report into the terminal, starting with a severity legend in plain language, then every finding kept (id, tool, evidence). Without a model, you get the structured markdown / JSON / SARIF writers as-is. Re-render later with mcpaegis report.
+
+---
+
+## Setup
 
 ```bash
 cd /path/to/MCPAegis
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-```
-
-Homebrew Python 3.11 is typically `/opt/homebrew/bin/python3.11`. Default `python3` may be 3.10 and will fail `requires-python`.
-
-### Optional tools (static)
-
-Static analysis runs with Python alone, but these improve coverage:
-
-- [Semgrep](https://semgrep.dev/) — taint/sink rules (`semgrep` on `PATH`)
-- `pip-audit` / `npm audit` / [osv-scanner](https://google.github.io/osv-scanner/) / `cargo-audit` — dependency findings (W4)
-
-### Runtime (Linux only)
-
-`mcpaegis runtime` and the runtime half of `mcpaegis full` need:
-
-- Linux host with a **stock kernel** (BTF + kprobes) — not macOS, not Docker Desktop’s LinuxKit VM
-- cgroup v2 (`/sys/fs/cgroup/cgroup.controllers`)
-- BCC matching the kernel (`python3-bpfcc`, `bpfcc-tools`, `linux-headers-$(uname -r)`) **on the same host** that runs `mcpaegis`
-- the `mcp` Python package in the guest venv (fixtures import FastMCP)
-
-On macOS, `runtime` prints an error and exits 1. `full` still writes the static report, warns, and emits a combined report from static results only.
-
-**VM = kernel for the auditor and the process that runs the server.** On Apple Silicon (macOS ≥13.5) that VM is Lima + Ubuntu 24.04 ARM64 (`vz` / Virtualization.framework). Config: [`lima.yaml`](lima.yaml).
-
-The TUI owns install/start/venv/`sudo -E`. Manual copy-paste remains in [docs/lima-runtime.md](docs/lima-runtime.md).
-
-```bash
-mcpaegis          # TUI: mode, then model on/off, then path, then script
-# first Runtime/Full may brew-install Lima and download Ubuntu (minutes)
-```
-
----
-
-## Quick start
-
-Apple Silicon Mac: install the package, then launch the TUI. Homebrew is used only if Lima is missing.
-
-```bash
+# optional but recommended for static taint
 pip install -e ".[static]"
+```
+
+Create .env as shown above if you want OpenRouter. Process environment still wins over the file.
+
+```bash
 mcpaegis
 ```
 
-Pick **Static**, **Runtime**, or **Full**, then enter a path to a local MCP server **under your home directory** (`~` is the virtiofs mount). Runtime and Full start Lima if needed. Reports land in `~/mcpaegis-out/<server-name>/`.
+Bare mcpaegis on a TTY opens the wizard, walking through mode, model on/off, path, optional test script, and run. First Runtime / Full may brew-install Lima and download Ubuntu.
 
-Subcommands still work for scripts and CI (static on any OS; runtime only on Linux):
+Subcommands still work for scripts and CI (static on any OS. runtime on Linux, or via Lima on Darwin).
 
 ```bash
 mcpaegis static ./tests/fixtures/poisoned_description --output ./out
-```
-
-Reports land in `./out` (default without `--output`: `./mcpaegis-out`):
-
-- `static-report.json`
-- `static-report.sarif`
-- `static-report.md`
-
-Re-render an existing JSON report:
-
-```bash
-mcpaegis report ./out/static-report.json --format html --output ./out
-mcpaegis report ./out/static-report.json --format md --output ./out
-mcpaegis report ./out/static-report.json --format sarif --output ./out
-```
-
----
-
-## CLI
-
-```text
-mcpaegis                         # TUI (TTY): mode → model on/off → path → script → run
-mcpaegis static <path> [--format json|sarif|md] [--output DIR] [--categories W1,W3,...] [--fail-on HIGH|CRITICAL] [--no-color]
-mcpaegis runtime <path> [--test-script FILE] [--sandbox process] [--max-calls N] [--timeout SEC] [--format ...] [--output DIR] [--fail-on ...] [--no-color]
-mcpaegis full <path> [union of the above] [--fail-on HIGH|CRITICAL]
-mcpaegis report <results.json> --format html|md|sarif --output DIR
-```
-
-Examples:
-
-```bash
-mcpaegis static ./server --format json --output ./out --categories W1,W3 --no-color
-mcpaegis runtime ./server --test-script tests.yaml --max-calls 20 --timeout 30 --output ./out
-mcpaegis full ./server --output ./out --fail-on HIGH
+mcpaegis runtime ./tests/fixtures/command_injection --test-script tests.yaml --output ./out
+mcpaegis full ./tests/fixtures/command_injection --output ./out --fail-on HIGH
 mcpaegis report ./out/combined-report.json --format html --output ./out
 ```
 
-- `full` runs static, then runtime (auto-wires the static report), then merges.
-- `runtime` uses `<output_dir>/static-report.json` when present; otherwise it warns and skips declared-vs-observed checks.
-- `--fail-on` exits 1 if any finding is at or above that severity (CI).
-- `--no-color` / non-TTY output disables ANSI color.
-
-### Test script (runtime)
-
-YAML or JSON list of explicit invocations that override/supplement schema-generated args:
-
-```yaml
-- tool_name: run_cmd
-  arguments:
-    command: echo hello
+```text
+mcpaegis                         # TUI
+mcpaegis static <path> [--format json|sarif|md] [--output DIR] [--categories W1,W3,...] [--fail-on HIGH|CRITICAL] [--no-color] [--llm-model ...] [--llm-base-url ...]
+mcpaegis runtime <path> [--test-script FILE] [--max-calls N] [--timeout SEC] [--format ...] [--output DIR] [--fail-on ...]
+mcpaegis full <path> [union of the above]
+mcpaegis report <results.json> --format html|md|sarif --output DIR
 ```
+
+- full runs static, then runtime (auto-wires static-report.json), then merges.
+- runtime uses <output_dir>/static-report.json when present, otherwise it warns and skips declared-vs-observed checks.
+- --fail-on exits 1 if any finding is at or above that severity (CI).
+- Guest fallback and failure modes live in [docs/lima-runtime.md](docs/lima-runtime.md). Semgrep rule authoring lives in [docs/rule-authoring.md](docs/rule-authoring.md).
+
+### Precautions
+
+- Fixtures are handshake-safe. Import plus initialize / tools/list do no I/O. Dangerous APIs stay in source so Semgrep can see them. Do not tools/call them on your machine unless you intend to (runtime does this inside the VM / cgroup).
+- Do not npm install tests/fixtures/supply_chain unless you want to exercise audit. It has a postinstall hook.
+- Auto-fill never passes the canary file path as an argument. Prefer an explicit test script for shells (command echo hello).
+- Reports never store raw static secrets. Snippets are redacted.
+- Nested cgroup + BCC need root in the guest. The Mac user does not type sudo for host Python.
+- Intel Macs cannot use this ARM vz guest. Ubuntu 24.04 is the tested BCC/header combo.
 
 ---
 
-## LLM (optional)
-
-Semantic stages run only when a key is set. Missing key skips those stages; analysis does not fail.
-
-- Static Lane A: one advertisement pass (W1 + declared capabilities). Regex/keywords if the key is missing or JSON is bad.
-- Dynamic Stage 4: when an API key is set, the **LLM emits** runtime evidence (W3/W5/W6/W7/W9/W10) from the filtered tree plus declared/code/observed capabilities. Each classification includes a reason. W1/W2/W4/W8 stay in the static half of the overall list. Code verify is the fallback if the key is missing or the model fails. Pre-exec is code-only (no LLM).
-
-Put the key and model in a repo-root `.env`. MCPAegis loads it automatically (cwd, then repo root). Process env still wins over the file.
-
-```
-MCPAEGIS_LLM_API_KEY=sk-or-...
-MCPAEGIS_LLM_BASE_URL=https://openrouter.ai/api/v1
-MCPAEGIS_LLM_MODEL=qwen/qwen3.8-27b
-```
-
-`--llm-model` / `--llm-base-url` on `static` / `runtime` / `full` override both.
-
-Prompts live in [`mcpaegis/llm/prompts.py`](mcpaegis/llm/prompts.py). They are instructed not to treat argument names (`query`, `path`) or explanatory cross-tool mentions as poisoning or as observed capabilities.
-
----
-
-## Tests
+## Tests, fixtures, ground truth vs observed
 
 ```bash
 source .venv/bin/activate
 pytest tests/unit tests/integration
 ```
 
-Vendored fixture servers under `tests/fixtures/`. Each tree is a handshake-safe FastMCP (or JS) stub.
+Vendored trees live under tests/fixtures/. Each is a handshake-safe FastMCP (or JS) stub. Ground truth is the planted overall ID I expect in the combined report. Observed is what the latest Linux + LLM full run (out/full6) actually emitted. Extra stub W8 on a privileged sink with no auth helper is allowed.
 
-### Fixture catalog
+| Fixture | Ground truth | Observed | Notes |
+| --- | --- | --- | --- |
+| poisoned_description | W1 | Correct | Jailbreak in summarize docstring. Innocent search |
+| malicious_tools_adapted | W1 | Correct | Jailbreak moved into the docstring (adapted Appsecco lab) |
+| tool_shadowing | W2 | Partial | W2 present. Extra LOW W3 on stubs (path vs no open) |
+| overprivileged | W3 + W5 | Correct | Docs say search. Code subprocess.run(query, shell=True) |
+| supply_chain | W4 | (static only) | JS stub + postinstall + pinned lodash. No server.py in the runtime loop |
+| command_injection | W5 | Correct | run_cmd reaches shell=True. Runtime /bin/sh |
+| eval_format | W5 | Correct | eval(fmt) static W5. Runtime correctly does not re-emit (no execve) |
+| workspace_actions | W6 + W5 | Partial | Planted file + eval present. Extra LOW W3 from name / eval taxonomy |
+| path_traversal | W6 | Correct | Path(path).read_text |
+| ssrf | W7 | Correct | requests.get(url). Runtime confirm needs http://example.com/ |
+| missing_access_control | W8 + W5 | Correct | Declared shell, no auth helper |
+| static_credentials | W10 | Correct | Hardcoded AKIA / demo key. echo does not leak canaries |
+| indirect_prompt_injection | none | Correct | Hidden text is in the body, not metadata, so out of scope |
+| unrelated_cleanup | W3, no W5 | Correct | Hidden hardcoded rm. Taint must not mark direct |
+| sanitized_shell | no W5 | Partial | Runtime dropped W5. Semgrep can still flag shlex.quote + argv /bin/echo |
+| name_collision | no W5 on MCP search | (not in runtime loop) | Unrelated search in other.py must not taint the tool |
 
-Planted ID is the **overall** expectation (combined report). How it is gathered is in the notes.
-
-| Dir | Overall expect | What the server does | How it is found | Notes |
-| --- | --- | --- | --- | --- |
-| `poisoned_description` | W1 | `summarize` docstring jailbreak; innocent `search` | Metadata fast rules | Description-only |
-| `malicious_tools_adapted` | W1 | Jailbreak in the **docstring** (adapted); body returns JSON | Same W1 rules | Original Appsecco poison was return-JSON — that shape is out of scope |
-| `tool_shadowing` | W2 | `read_file` + registered `read-file` | Name collision | Package typosquats are **not** W2 |
-| `overprivileged` | W3 + W5 | Docs say search; code `subprocess.run(query, shell=True)` | Taint W5 + under_declared W3; runtime confirms both | Stub W8 is expected |
-| `supply_chain` | W4 | JS stub + `postinstall` + `lodash@4.17.20` | Lane C SCA | No `server.py`; do not `npm install` unless you want audit |
-| `command_injection` | W5 | `run_cmd(command)` → `shell=True` | Taint + runtime `/bin/sh` | Stub W8 expected |
-| `eval_format` | W5 | `eval(fmt)` on an in-memory quote | Taint `dynamic_code_load` | No execve — runtime must **not** confirm W5 |
-| `workspace_actions` | W6 + W5 | Naive join `open`/`write`; `eval(code)` | Taint file + eval | Runtime confirms read `FILE_OPEN`; in-process eval stays static |
-| `path_traversal` | W6 | `Path(path).read_text` | Taint + runtime open | |
-| `ssrf` | W7 | `requests.get(url)` no allowlist | Taint; runtime needs a real URL (`http://example.com/`) | Placeholder string is not a fetch |
-| `missing_access_control` | W8 + W5 | Declared shell, no auth helper | Taint W5 + auth-name heuristic W8 | Docstring *admits* subprocess |
-| `static_credentials` | W10 | Hardcoded `AKIA…` / `mcp_demo_…` | Lane C regex, redacted | `echo` does not leak canaries |
-| `indirect_prompt_injection` | *(none)* | Wiki body embeds `[SYSTEM INSTRUCTION]` | Out of scope | Not metadata, not a sink |
-
-Counter-examples (overall must **not** include the named injection):
-
-| Dir | Overall expect |
-| --- | --- |
-| `unrelated_cleanup` | W3 (hidden hardcoded `rm`); **no W5**. Runtime confirms W3, not injection |
-| `sanitized_shell` | **no W5** — `shlex.quote` then argv `/bin/echo` |
-| `name_collision` | No W5 on the MCP `search` tool (unrelated `search` in `other.py`) |
-
-### Current eval (`out/full6`, Linux + LLM emitter)
-
-Score is **overall** (union of static + runtime). Provenance is stored but does not change the grade. Extra stub W8 on a privileged sink with no auth is allowed.
-
-| Fixture | Overall | Why |
-| --- | --- | --- |
-| `command_injection` | Correct | W5 (+ W8) |
-| `path_traversal` | Correct | W6 |
-| `missing_access_control` | Correct | W5 + W8 |
-| `overprivileged` | Correct | W3 + W5 |
-| `unrelated_cleanup` | Correct | W3, not W5 |
-| `eval_format` | Correct | W5 present; runtime correctly did not re-emit it |
-| `poisoned_description` | Correct | W1 |
-| `malicious_tools_adapted` | Correct | W1 |
-| `static_credentials` | Correct | W10 (static regex; no canary leak) |
-| `indirect_prompt_injection` | Correct | empty |
-| `ssrf` | Correct | W7 (runtime confirm with `example.com`) |
-| `workspace_actions` | Partial | Planted W6 + W5 are present; extra LOW W3 from name/eval taxonomy |
-| `tool_shadowing` | Partial | W2 present; extra LOW W3 on stubs (`path` vs no `open`) |
-| `sanitized_shell` | Partial | Runtime dropped W5; **overall still has false HIGH W5** from Semgrep through `shlex.quote` |
-
-`name_collision` and `supply_chain` were not in the runtime loop (no `server.py` / W4-only).
+Several fixtures are reconstructions of [appsecco/vulnerable-mcp-servers-lab](https://github.com/appsecco/vulnerable-mcp-servers-lab) (MIT), stripped of install-time network, real keys, and HTTP bind. [MCP-Tox](https://github.com/luoji12103/MCP-Tox) is an LLM-agent simulation and is not mapped here.
 
 ```bash
 mcpaegis static ./tests/fixtures/eval_format --output ./out
 ```
-
-### Appsecco Vulnerable MCP Servers Lab → fixtures
-
-Reconstructions of [appsecco/vulnerable-mcp-servers-lab](https://github.com/appsecco/vulnerable-mcp-servers-lab) (MIT). Not clones of the live servers: no install-time network, no real keys, no HTTP bind, no extra argv.
-
-| Lab folder | Fixture | Overall expect | What we stripped / adapted |
-| --- | --- | --- | --- |
-| `vulnerable-mcp-server-filesystem-workspace-actions` | `workspace_actions` | W6 (`open`/`write` after naive join), W5 (`eval`). Possibly W3/W8 | Dropped required workspace argv (`sys.exit`); dummy `WORKSPACE` string |
-| `vulnerable-mcp-server-malicious-code-exec` | `eval_format` | W5 (`eval(fmt)`) | Dropped quote HTTP fetch and any API key |
-| `vulnerable-mcp-server-malicious-tools` | `malicious_tools_adapted` | W1 | **Adapted:** jailbreak moved into the docstring. Original poison was return-JSON (prompt-injection class) — static W1 would miss it |
-| `vulnerable-mcp-server-indirect-prompt-injection` | `indirect_prompt_injection` | **No** W1/W5/W6/W7 | In-memory corpus instead of on-disk/HTTP docs. Hidden text is in the **body**, not metadata |
-| `vulnerable-mcp-server-indirect-prompt-injection-remote-mcp` | *(skipped)* | — | Same IPI shape plus HTTP+SSE transport |
-| `vulnerable-mcp-server-secrets-pii` | `static_credentials` | W10 | Fake `AKIA` / `mcp_demo_` only. No icahazip/weather/news, no startup log of admin contact, no base64 PII table |
-| `vulnerable-mcp-server-outdated-pacakges` | `supply_chain` | W4 (install hook; audit optional) | Single `postinstall` echo + one lodash pin, not their full CVE pin set |
-| `vulnerable-mcp-server-wikipedia-http-streamable` | `ssrf` | W7 | Stdio `requests.get(url)` instead of Streamable HTTP Wikipedia client. Untrusted-content IPI is a **miss** (same as document IPI) |
-| `vulnerable-mcp-server-namespace-typosquatting` | `tool_shadowing` (related only) | W2 on **tool** lookalikes | Lab is a **package** name (`twittter-mcp`). That is not W2; we do not vendor a fake npm package |
-
-[MCP-Tox](https://github.com/luoji12103/MCP-Tox) is an LLM-agent simulation, not MCP server source. It is **not** mapped onto these fixtures.
-
----
-
-## Extending rules
-
-See [docs/rule-authoring.md](docs/rule-authoring.md) for Semgrep sink rules and taxonomy (`Capability` / `Weakness` / `SinkType`).
