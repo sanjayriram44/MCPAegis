@@ -138,6 +138,33 @@ def ensure_instance(
     raise LimaError(f"Lima instance {name!r} did not reach Running")
 
 
+def stop_instance(
+    *,
+    limactl: str | None = None,
+    name: str = INSTANCE_NAME,
+    log: LogFn = _noop_log,
+    cancel: CancelFn | None = None,
+) -> None:
+    """Stop the shared VM so host RAM/CPU are freed. Disk and guest venv stay."""
+    binary = limactl or find_limactl()
+    if not binary:
+        log("limactl is not on PATH; skipping Lima stop.")
+        return
+    current = instance_named(list_instances(binary), name)
+    if current is None:
+        log(f"Lima instance {name!r} is not present.")
+        return
+    if not current.running:
+        log(f"Lima instance {name!r} already stopped.")
+        return
+    log(f"Stopping Lima instance {name!r} to free host resources…")
+    code = run_streaming([binary, "stop", "-y", name], log=log, cancel=cancel)
+    if code != 0:
+        log(f"warning: limactl stop failed with exit {code}")
+        return
+    log(f"Lima instance {name!r} stopped. Disk kept for the next start.")
+
+
 def shell(
     argv: Sequence[str],
     *,
